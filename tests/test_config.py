@@ -163,6 +163,7 @@ def test_load_model_config_yaml():
 # ---------------------------------------------------------------------------
 
 _CONFIGS_DIR = Path(__file__).parent.parent / "configs"
+CONFIGS_DIR = _CONFIGS_DIR
 
 
 def test_load_real_llama_config():
@@ -193,3 +194,12 @@ def test_load_real_hardware_config():
     assert hw.devices_per_node == 8
     assert hw.calibration.compute_eff_large_gemm == pytest.approx(0.50)
     assert hw.calibration.comm_efficiency == pytest.approx(0.70)
+
+
+@pytest.mark.parametrize("name", [
+    "llama3_1_8b", "qwen2_5_72b", "mistral_7b", "qwen3_235b_moe", "deepseekv3_671b",
+])
+def test_load_all_model_configs(name):
+    mc = load_model_config(str(CONFIGS_DIR / "models" / f"{name}.yaml"))
+    assert mc.num_layers > 0
+    assert len(mc.get_layers()) == mc.num_layers

@@ -1,0 +1,17 @@
+name: "Qwen3-235B-A22B"
+hidden_size: 4096
+vocab_size: 151936
+num_layers: 94
+dtype: bf16
+default_layer:
+  attention: GQA
+  num_heads: 64
+  num_kv_heads: 4
+  head_dim: 128
+  ffn: MoE
+  num_experts: 128
+  num_shared_experts: 4
+  top_k: 8
+  expert_intermediate_size: 2048
+  shared_intermediate_size: 4096
+  intermediate_size: 4096

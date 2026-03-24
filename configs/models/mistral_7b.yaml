@@ -1,0 +1,13 @@
+name: "Mistral-7B"
+hidden_size: 4096
+vocab_size: 32000
+num_layers: 32
+dtype: bf16
+default_layer:
+  attention: SWA
+  num_heads: 32
+  num_kv_heads: 8
+  head_dim: 128
+  window_size: 4096
+  ffn: SwiGLU
+  intermediate_size: 14336

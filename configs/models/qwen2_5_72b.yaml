@@ -1,0 +1,12 @@
+name: "Qwen2.5-72B"
+hidden_size: 8192
+vocab_size: 152064
+num_layers: 80
+dtype: bf16
+default_layer:
+  attention: GQA
+  num_heads: 64
+  num_kv_heads: 8
+  head_dim: 128
+  ffn: SwiGLU
+  intermediate_size: 29568

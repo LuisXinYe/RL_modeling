@@ -1,0 +1,24 @@
+name: "DeepSeek-V3-671B"
+hidden_size: 7168
+vocab_size: 129280
+num_layers: 61
+dtype: bf16
+default_layer:
+  attention: MLA
+  num_heads: 128
+  num_kv_heads: 128
+  head_dim: 128
+  kv_compression_dim: 512
+  query_compression_dim: 1536
+  rope_dim: 64
+  ffn: MoE
+  num_experts: 256
+  num_shared_experts: 1
+  top_k: 8
+  expert_intermediate_size: 2048
+  shared_intermediate_size: 18432
+  intermediate_size: 18432
+  residual: mHC
+  mhc_expansion: 4
+auxiliary:
+  mtp_depth: 1
