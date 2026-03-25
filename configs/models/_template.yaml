@@ -1,0 +1,49 @@
+# ============================================================
+# rl-perf Model Configuration Template
+# Copy this file and fill in your model's parameters.
+# ============================================================
+
+name: "MyModel-XXB"        # Display name
+hidden_size: 4096           # Model hidden dimension (d)
+vocab_size: 128000          # Vocabulary size
+num_layers: 32              # Total transformer layers
+dtype: bf16                 # Weight dtype: bf16, fp16, fp32, fp8
+
+# Layer configuration
+# Option 1: All layers identical → use default_layer
+# Option 2: Different layers (hybrid) → use layers list
+default_layer:
+  # --- Attention ---
+  # Supported types: MHA, GQA, MLA, SWA
+  attention: GQA
+  num_heads: 32             # Query heads (must be divisible by TP)
+  num_kv_heads: 8           # KV heads (GQA: < num_heads, MHA: = num_heads)
+  head_dim: 128             # Per-head dimension (num_heads * head_dim = hidden_size typically)
+
+  # MLA-specific (only when attention: MLA)
+  # kv_compression_dim: 512       # d_c: KV latent dimension
+  # query_compression_dim: 1536   # d'_c: query latent dimension
+  # rope_dim: 64                  # d_R: decoupled RoPE dimension
+
+  # SWA-specific (only when attention: SWA)
+  # window_size: 4096             # Sliding window size
+
+  # --- FFN ---
+  # Supported types: SwiGLU, MoE
+  ffn: SwiGLU
+  intermediate_size: 11008  # FFN hidden dim (SwiGLU: gate+up+down)
+
+  # MoE-specific (only when ffn: MoE)
+  # num_experts: 64               # Total expert count (must be divisible by EP)
+  # num_shared_experts: 1         # Shared experts (always-active, not routed)
+  # top_k: 8                      # Experts activated per token
+  # expert_intermediate_size: 2048     # Per-expert FFN hidden dim
+  # shared_intermediate_size: 11008    # Shared expert FFN hidden dim
+
+  # --- Residual connection ---
+  residual: standard        # standard or mHC (manifold-constrained HyperConnections)
+  # mhc_expansion: 4        # Only when residual: mHC
+
+# --- Auxiliary modules (optional) ---
+# auxiliary:
+#   mtp_depth: 1            # Multi-Token Prediction depth (DeepSeek V3)
