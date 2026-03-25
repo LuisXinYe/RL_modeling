@@ -79,6 +79,15 @@ print(f"Epoch: {report.epoch_time_hours:.2f}h | Gen TPS: {report.gen_tps_target:
 
 Copy `configs/models/_template.yaml` and fill in your model's parameters. See the template for detailed field descriptions.
 
+## Tutorials
+
+| Resource | Description |
+|----------|-------------|
+| [`examples/demo.py`](examples/demo.py) | Quick demo: prediction, what-if comparison, sensitivity sweep |
+| [`notebooks/01_quick_start.ipynb`](notebooks/01_quick_start.ipynb) | First prediction in 5 minutes |
+| [`notebooks/02_what_if_analysis.ipynb`](notebooks/02_what_if_analysis.ipynb) | Compare parallelism strategies and hardware |
+| [`notebooks/03_moe_scaling.ipynb`](notebooks/03_moe_scaling.ipynb) | MoE vs Dense scaling with EP trade-offs |
+
 ## Architecture
 
 ```
@@ -87,11 +96,23 @@ YAML Config → ops.py (roofline per op) → builder.py (parallelism + DAG)
            → TargetReport (TPS targets + memory profile)
 ```
 
+See [docs/architecture.md](docs/architecture.md) for a detailed deep-dive.
+
+## Documentation
+
+- [Architecture deep-dive](docs/architecture.md) — Three-layer design, roofline model, pipeline simulation
+- [Config reference](docs/config-reference.md) — All configuration fields, constraints, and defaults
+- [Result interpretation](docs/result-interpretation.md) — How to read reports and make decisions
+- [Calibration guide](docs/calibration-guide.md) — Measuring and tuning calibration coefficients
+- [Troubleshooting](docs/troubleshooting.md) — Common errors and fixes
+
 ## Tests
 
 ```bash
-pytest tests/ -v          # 86 tests
+pytest tests/ -v          # 139 tests
 ```
+
+Requires Python >= 3.10.
 
 ## Accuracy
 
