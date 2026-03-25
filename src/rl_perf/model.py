@@ -29,6 +29,14 @@ class RLPerformanceModel:
             TargetReport with epoch time, TPS targets, memory profile,
             and feasibility verdict.
         """
+        # Validate device layout consistency
+        for label, par in [("gen_parallel", gen_parallel), ("train_parallel", train_parallel)]:
+            if par.total_devices > total_devices:
+                raise ValueError(
+                    f"{label} requires {par.total_devices} devices "
+                    f"but only {total_devices} available."
+                )
+
         # Compute generation and training times
         t_gen, gen_sim, t_per_batch = generation_time(self.model, self.hw, gen_parallel, rl_cfg)
         t_train, train_sim = training_time(self.model, self.hw, train_parallel, rl_cfg)

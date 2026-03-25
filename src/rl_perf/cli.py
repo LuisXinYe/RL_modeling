@@ -1,4 +1,5 @@
 from enum import Enum
+from pathlib import Path
 
 import typer
 import yaml
@@ -7,6 +8,8 @@ from pydantic import ValidationError
 from rl_perf.config import load_model_config, load_hardware_config, RLConfig, ParallelismConfig
 from rl_perf.model import RLPerformanceModel
 from rl_perf.report import format_table, format_json
+
+_CONFIGS_DIR = Path(__file__).resolve().parent.parent.parent / "configs"
 
 
 class OutputFormat(str, Enum):
@@ -17,8 +20,8 @@ app = typer.Typer(help="RL Training Performance Modeling Tool")
 
 # Hardware shortname mapping
 HW_SHORTCUTS = {
-    "910C": "configs/hardware/ascend_910c.yaml",
-    "CM384": "configs/hardware/cloudmatrix_384.yaml",
+    "910C": str(_CONFIGS_DIR / "hardware" / "ascend_910c.yaml"),
+    "CM384": str(_CONFIGS_DIR / "hardware" / "cloudmatrix_384.yaml"),
 }
 
 

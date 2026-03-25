@@ -2,8 +2,8 @@ import math
 
 from rl_perf import ops
 from rl_perf.builder import build_training_step, build_generation_step
-from rl_perf.config import HardwareConfig, ModelConfig, ParallelismConfig, Phase, RLConfig
-from rl_perf.simulator import SimResult, simulate
+from rl_perf.config import Phase
+from rl_perf.simulator import simulate
 
 
 def effective_response_len(avg: int, std: int = None, batch_size: int = 1, max_len: int = None) -> float:

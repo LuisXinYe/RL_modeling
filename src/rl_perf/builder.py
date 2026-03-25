@@ -33,6 +33,11 @@ def _validate_parallelism(
             f"pp={pp} exceeds num_layers={len(all_layers)}. "
             f"pp must be <= number of model layers."
         )
+    if len(all_layers) % pp != 0:
+        raise ValueError(
+            f"num_layers={len(all_layers)} not divisible by pp={pp}. "
+            f"pp must evenly divide num_layers."
+        )
 
     for i, layer in enumerate(all_layers):
         if layer.num_heads % tp != 0:
@@ -136,8 +141,9 @@ def build_layer_ops(
     cp = parallel_cfg.cp
     d = model_cfg.hidden_size
     dtype_bytes = model_cfg.dtype_bytes
-    batch_tokens = batch * seq_len
-    attn_seq_len = seq_len // cp if cp > 1 else seq_len
+    # CP shards the sequence across ranks; all per-rank ops use the local length
+    local_seq_len = seq_len // cp if cp > 1 else seq_len
+    batch_tokens = batch * local_seq_len
 
     result: List[SimOp] = []
 
@@ -194,7 +200,7 @@ def build_layer_ops(
             head_dim=layer_cfg.head_dim,
             hidden_size=d,
             batch=batch,
-            seq_len=attn_seq_len,
+            seq_len=local_seq_len,
             phase=phase,
             kv_len=kv_len,
             dtype_bytes=dtype_bytes,
@@ -208,7 +214,7 @@ def build_layer_ops(
             head_dim=layer_cfg.head_dim,
             hidden_size=d,
             batch=batch,
-            seq_len=attn_seq_len,
+            seq_len=local_seq_len,
             phase=phase,
             window_size=layer_cfg.window_size,
             kv_len=kv_len,
@@ -224,7 +230,7 @@ def build_layer_ops(
             query_compression_dim=layer_cfg.query_compression_dim,
             rope_dim=layer_cfg.rope_dim,
             batch=batch,
-            seq_len=attn_seq_len,
+            seq_len=local_seq_len,
             phase=phase,
             kv_len=kv_len,
             dtype_bytes=dtype_bytes,
@@ -237,7 +243,7 @@ def build_layer_ops(
         ag_attn = _build_tp_comm(
             name="tp_allgather_attn", collective="allgather",
             batch=batch,
-            seq_len=seq_len,
+            seq_len=local_seq_len,
             hidden_size=d,
             dtype_bytes=dtype_bytes,
             tp=tp,
@@ -262,7 +268,7 @@ def build_layer_ops(
         collective = "reducescatter" if parallel_cfg.sp else "allreduce"
         tp_attn_comm = _build_tp_comm(
             name=f"tp_{collective}_attn", collective=collective,
-            batch=batch, seq_len=seq_len, hidden_size=d,
+            batch=batch, seq_len=local_seq_len, hidden_size=d,
             dtype_bytes=dtype_bytes, tp=tp, hw=hw,
             dep_idx=_idx(len(result) - 1),
         )
@@ -288,7 +294,7 @@ def build_layer_ops(
         ag_ffn = _build_tp_comm(
             name="tp_allgather_ffn", collective="allgather",
             batch=batch,
-            seq_len=seq_len,
+            seq_len=local_seq_len,
             hidden_size=d,
             dtype_bytes=dtype_bytes,
             tp=tp,
@@ -373,7 +379,7 @@ def build_layer_ops(
         collective = "reducescatter" if parallel_cfg.sp else "allreduce"
         tp_ffn_comm = _build_tp_comm(
             name=f"tp_{collective}_ffn", collective=collective,
-            batch=batch, seq_len=seq_len, hidden_size=d,
+            batch=batch, seq_len=local_seq_len, hidden_size=d,
             dtype_bytes=dtype_bytes, tp=tp, hw=hw,
             dep_idx=_idx(last_compute_local),
         )
@@ -590,7 +596,7 @@ def build_training_step(
             prev_dep = len(all_ops) - 1
 
     # ------ DP gradient sync ---------------------------------------------------
-    param_count = _estimate_param_count(model_cfg, parallel_cfg, all_layers)
+    param_count = _estimate_param_count(model_cfg, parallel_cfg, stage_layers)
     if dp > 1:
         grad_bytes = param_count * dtype_bytes  # gradient same dtype as weights
 

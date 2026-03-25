@@ -8,7 +8,6 @@ import pytest
 import yaml
 
 from rl_perf.config import (
-    CalibrationConfig,
     HardwareConfig,
     LayerConfig,
     ModelConfig,
@@ -45,7 +44,7 @@ def test_model_config_expands_layers():
     )
     layers = model.get_layers()
     assert len(layers) == 4
-    assert all(l.num_heads == 16 for l in layers)
+    assert all(layer.num_heads == 16 for layer in layers)
 
 
 def test_model_config_raises_without_layers():

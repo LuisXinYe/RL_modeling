@@ -7,7 +7,7 @@ Use roofline_time() to convert OpCost → seconds given a HardwareConfig.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from rl_perf.config import HardwareConfig, Phase
 

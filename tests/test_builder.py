@@ -439,6 +439,16 @@ def test_build_training_step_rejects_pp_gt_layers():
         build_training_step(mc, hw, parallel, rl)
 
 
+def test_build_training_step_rejects_pp_not_dividing_layers():
+    mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
+    hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
+    rl = RLConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
+    # Llama 3.1 8B has 32 layers; pp=3 doesn't divide evenly
+    parallel = ParallelismConfig(tp=1, pp=3, dp=1)
+    with pytest.raises(ValueError, match="not divisible"):
+        build_training_step(mc, hw, parallel, rl)
+
+
 def test_hybrid_layers_different_types(hw, rl_cfg):
     """Model with per-layer configs should build ops for each layer type."""
     mc = ModelConfig(

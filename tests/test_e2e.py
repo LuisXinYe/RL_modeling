@@ -56,8 +56,8 @@ def test_e2e_derive_targets(model_name, tp, pp, dp, ep, expected_max_hours, hw, 
 
 
 @pytest.mark.parametrize("model_name,tp,pp,dp,ep", [
-    ("qwen3_235b_moe", 4, 4, 2, 8),   # MoE with EP (tp=4: num_kv_heads=4)
-    ("deepseekv3_671b", 8, 4, 2, 16),  # MLA + MoE + mHC
+    ("qwen3_235b_moe", 4, 2, 4, 8),   # MoE with EP (94 layers, pp must divide 94)
+    ("deepseekv3_671b", 8, 1, 2, 16),  # MLA + MoE + mHC (61 layers is prime)
 ])
 def test_e2e_moe_models(model_name, tp, pp, dp, ep, hw, rl_cfg):
     mc = load_model_config(str(CONFIGS_DIR / "models" / f"{model_name}.yaml"))
@@ -110,13 +110,12 @@ def test_e2e_what_if_comparison(hw):
 
 def test_e2e_full_suite_print(hw, rl_cfg, capsys):
     """Print results for all models for visual inspection."""
-    models = ["llama3_1_8b", "qwen2_5_72b", "mistral_7b", "qwen3_235b_moe", "deepseekv3_671b"]
     configs = [
         ("llama3_1_8b", 8, 1, 8, 1),
         ("qwen2_5_72b", 8, 4, 4, 1),
         ("mistral_7b", 8, 1, 8, 1),
-        ("qwen3_235b_moe", 4, 4, 2, 8),
-        ("deepseekv3_671b", 8, 4, 2, 16),
+        ("qwen3_235b_moe", 4, 2, 4, 8),
+        ("deepseekv3_671b", 8, 1, 2, 16),
     ]
 
     for model_name, tp, pp, dp, ep in configs:
@@ -142,11 +141,12 @@ def test_e2e_deepseekv3_with_mtp(rl_cfg):
     hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
 
     perf = RLPerformanceModel(mc, hw)
-    gen_p = ParallelismConfig(tp=8, pp=1, dp=48, ep=1)
-    train_p = ParallelismConfig(tp=8, pp=4, dp=4, ep=8)
+    total_devices = 256
+    gen_p = ParallelismConfig(tp=8, pp=1, dp=total_devices // 8)
+    train_p = ParallelismConfig(tp=8, pp=1, dp=4, ep=8)
 
     report = perf.derive_targets(
-        total_devices=train_p.total_devices,
+        total_devices=total_devices,
         rl_cfg=rl_cfg, gen_parallel=gen_p, train_parallel=train_p,
         time_budget_hours=48,
     )
