@@ -307,3 +307,60 @@ def test_sp_comm_volume_matches_allreduce(single_layer, model_cfg, hw):
     t_allreduce = sum(op.duration for op in ops_no_sp if "comm" in op.stream)
     t_sp = sum(op.duration for op in ops_sp if "comm" in op.stream)
     assert t_sp == pytest.approx(t_allreduce, rel=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Test 14: CP > 1 inserts cp_comm stream ops
+# ---------------------------------------------------------------------------
+
+
+def test_cp_inserts_ring_comm(single_layer, model_cfg, hw):
+    """cp > 1 should insert cp_comm stream ops."""
+    parallel_cp = ParallelismConfig(tp=1, pp=1, dp=1, ep=1, cp=4)
+    result = build_layer_ops(
+        layer_cfg=single_layer, model_cfg=model_cfg, parallel_cfg=parallel_cp,
+        hw=hw, batch=2, seq_len=4096, phase=Phase.TRAIN_FWD,
+    )
+    streams = {op.stream for op in result}
+    assert "cp_comm" in streams, f"CP should add cp_comm stream: {streams}"
+
+
+# ---------------------------------------------------------------------------
+# Test 15: CP = 1 has no cp_comm ops
+# ---------------------------------------------------------------------------
+
+
+def test_cp_1_no_comm(single_layer, model_cfg, hw):
+    """cp=1 should not insert any cp_comm ops."""
+    parallel_no_cp = ParallelismConfig(tp=1, pp=1, dp=1, ep=1, cp=1)
+    result = build_layer_ops(
+        layer_cfg=single_layer, model_cfg=model_cfg, parallel_cfg=parallel_no_cp,
+        hw=hw, batch=2, seq_len=4096, phase=Phase.TRAIN_FWD,
+    )
+    streams = {op.stream for op in result}
+    assert "cp_comm" not in streams
+
+
+# ---------------------------------------------------------------------------
+# Test 16: CP > 1 reduces attention compute time (seq_len / cp)
+# ---------------------------------------------------------------------------
+
+
+def test_cp_reduces_attention_seq_len(model_cfg, hw):
+    """cp > 1 should result in less compute time (seq_len / cp for attention)."""
+    layer = model_cfg.get_layers()[0]
+    parallel_1 = ParallelismConfig(tp=1, pp=1, dp=1, ep=1, cp=1)
+    parallel_4 = ParallelismConfig(tp=1, pp=1, dp=1, ep=1, cp=4)
+
+    ops_1 = build_layer_ops(
+        layer_cfg=layer, model_cfg=model_cfg, parallel_cfg=parallel_1,
+        hw=hw, batch=2, seq_len=4096, phase=Phase.TRAIN_FWD,
+    )
+    ops_4 = build_layer_ops(
+        layer_cfg=layer, model_cfg=model_cfg, parallel_cfg=parallel_4,
+        hw=hw, batch=2, seq_len=4096, phase=Phase.TRAIN_FWD,
+    )
+
+    compute_time_1 = sum(op.duration for op in ops_1 if op.stream == "compute")
+    compute_time_4 = sum(op.duration for op in ops_4 if op.stream == "compute")
+    assert compute_time_4 < compute_time_1

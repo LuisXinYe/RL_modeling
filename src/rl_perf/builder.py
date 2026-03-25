@@ -146,9 +146,11 @@ def build_layer_ops(
     """
     tp = parallel_cfg.tp
     ep = parallel_cfg.ep
+    cp = parallel_cfg.cp
     d = model_cfg.hidden_size
     dtype_bytes = model_cfg.dtype_bytes
     batch_tokens = batch * seq_len
+    attn_seq_len = seq_len // cp if cp > 1 else seq_len
 
     result: List[SimOp] = []
 
@@ -168,6 +170,31 @@ def build_layer_ops(
     )
     result.append(norm1)  # local idx 0
 
+    # ---- CP Ring comm (before attention) -------------------------------------
+    if cp > 1:
+        attn_type = layer_cfg.attention
+        if attn_type == "MLA":
+            kv_dim = layer_cfg.kv_compression_dim + layer_cfg.rope_dim
+        elif attn_type in ("GQA", "MHA", "SWA"):
+            tp_kv_heads = max(1, layer_cfg.num_kv_heads // tp)
+            kv_dim = tp_kv_heads * layer_cfg.head_dim
+        else:
+            kv_dim = layer_cfg.num_kv_heads * layer_cfg.head_dim
+
+        cp_cost = ops.op_ring_cp(seq_len, cp, kv_dim, dtype_bytes)
+        cp_ring = SimOp(
+            name="cp_ring_kv",
+            stream="cp_comm",
+            duration=ops.comm_time(
+                cp_cost, hw, group_size=cp,
+                is_intra_node=_is_intra_node(cp, hw), algorithm="ring_half"
+            ),
+            depends_on=[_idx(len(result) - 1)],  # depends on norm1
+            weight_bytes=0,
+            output_bytes=0,
+        )
+        result.append(cp_ring)
+
     # ---- 1. Attention -------------------------------------------------------
     attn_type = layer_cfg.attention
 
@@ -180,9 +207,9 @@ def build_layer_ops(
             head_dim=layer_cfg.head_dim,
             hidden_size=d,
             batch=batch,
-            seq_len=seq_len,
+            seq_len=attn_seq_len,
             phase=phase,
-            kv_len=kv_len,
+            kv_len=kv_len if kv_len is not None else None,
             dtype_bytes=dtype_bytes,
         )
     elif attn_type == "SWA":
@@ -194,10 +221,10 @@ def build_layer_ops(
             head_dim=layer_cfg.head_dim,
             hidden_size=d,
             batch=batch,
-            seq_len=seq_len,
+            seq_len=attn_seq_len,
             phase=phase,
             window_size=layer_cfg.window_size,
-            kv_len=kv_len,
+            kv_len=kv_len if kv_len is not None else None,
             dtype_bytes=dtype_bytes,
         )
     elif attn_type == "MLA":
@@ -210,9 +237,9 @@ def build_layer_ops(
             query_compression_dim=layer_cfg.query_compression_dim,
             rope_dim=layer_cfg.rope_dim,
             batch=batch,
-            seq_len=seq_len,
+            seq_len=attn_seq_len,
             phase=phase,
-            kv_len=kv_len,
+            kv_len=kv_len if kv_len is not None else None,
             dtype_bytes=dtype_bytes,
         )
     else:
