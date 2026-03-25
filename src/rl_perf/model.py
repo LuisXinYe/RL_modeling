@@ -4,11 +4,31 @@ from rl_perf.report import MemoryProfile, TargetReport
 
 
 class RLPerformanceModel:
+    """Top-level facade for RL training performance estimation.
+
+    Combines pipeline timing (generation + training), memory profiling,
+    and feasibility checking into a single interface.
+    """
+
     def __init__(self, model_cfg: ModelConfig, hw_cfg: HardwareConfig):
         self.model = model_cfg
         self.hw = hw_cfg
 
     def derive_targets(self, total_devices, rl_cfg, gen_parallel, train_parallel, time_budget_hours=None):
+        """Derive throughput targets and feasibility for one RL epoch.
+
+        Args:
+            total_devices: Total number of accelerator devices available.
+            rl_cfg: RLConfig describing the workload.
+            gen_parallel: ParallelismConfig for the generation phase.
+            train_parallel: ParallelismConfig for the training phase.
+            time_budget_hours: Optional time budget in hours. If provided,
+                the report marks whether the epoch fits within budget.
+
+        Returns:
+            TargetReport with epoch time, TPS targets, memory profile,
+            and feasibility verdict.
+        """
         # Compute generation and training times
         t_gen, gen_sim, t_per_batch = generation_time(self.model, self.hw, gen_parallel, rl_cfg)
         t_train, train_sim = training_time(self.model, self.hw, train_parallel, rl_cfg)
@@ -52,10 +72,25 @@ class RLPerformanceModel:
         )
 
     def feasibility_check(self, total_devices, rl_cfg, gen_parallel, train_parallel, time_budget_hours=None):
+        """Convenience alias for derive_targets; returns the same TargetReport."""
         return self.derive_targets(total_devices, rl_cfg, gen_parallel, train_parallel, time_budget_hours=time_budget_hours)
 
     def _compute_memory_profile(self, train_sim, gen_sim, train_parallel, gen_parallel, rl_cfg):
-        """Memory profile: weight/activation from SimResult, KV/optimizer/ref analytical."""
+        """Compute per-device memory breakdown for training and generation.
+
+        Combines SimResult-derived values (weights, activations) with analytical
+        estimates for optimizer states, KV cache, and reference model.
+
+        Args:
+            train_sim: SimResult from the training phase simulation.
+            gen_sim: SimResult from the generation phase simulation.
+            train_parallel: ParallelismConfig for training.
+            gen_parallel: ParallelismConfig for generation.
+            rl_cfg: RLConfig workload specification.
+
+        Returns:
+            MemoryProfile with per-component memory in GB and feasibility flags.
+        """
 
         # From SimResult (ephemeral memory)
         train_weight_gb = train_sim.weight_bytes / 1e9
@@ -113,13 +148,40 @@ class RLPerformanceModel:
 
     def what_if(self, base_config, overrides,
                 total_devices, gen_parallel, train_parallel, time_budget_hours=None):
-        """base_config + overrides → TargetReport for comparison."""
+        """Run a what-if scenario by merging overrides into a base RLConfig.
+
+        Args:
+            base_config: Dict of base RLConfig field values.
+            overrides: Dict of fields to override (e.g. {"group_size": 16}).
+            total_devices: Total number of accelerator devices.
+            gen_parallel: ParallelismConfig for generation.
+            train_parallel: ParallelismConfig for training.
+            time_budget_hours: Optional time budget in hours.
+
+        Returns:
+            TargetReport for the modified configuration.
+        """
         rl_cfg = RLConfig(**{**base_config, **overrides})
         return self.derive_targets(total_devices, rl_cfg, gen_parallel, train_parallel, time_budget_hours)
 
     def sensitivity(self, rl_cfg, param_name, values,
                     total_devices, gen_parallel, train_parallel):
-        """Sweep one parameter across values."""
+        """Sweep a single RLConfig parameter across multiple values.
+
+        Args:
+            rl_cfg: Base RLConfig instance.
+            param_name: Name of the RLConfig field to sweep (e.g. "group_size").
+            values: Iterable of values to try for the parameter.
+            total_devices: Total number of accelerator devices.
+            gen_parallel: ParallelismConfig for generation.
+            train_parallel: ParallelismConfig for training.
+
+        Returns:
+            List[TargetReport], one per value in the sweep.
+
+        Raises:
+            ValueError: If param_name is not a valid RLConfig field.
+        """
         if param_name not in RLConfig.model_fields:
             raise ValueError(f"Unknown RLConfig field: {param_name}")
         results = []

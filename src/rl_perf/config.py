@@ -9,6 +9,11 @@ from pydantic import BaseModel, field_validator
 
 
 class Phase(str, Enum):
+    """Execution phase of an RL training pipeline.
+
+    Used to select the appropriate cost model (prefill vs decode vs training).
+    """
+
     PREFILL = "prefill"
     DECODE = "decode"
     TRAIN_FWD = "train_fwd"
@@ -16,6 +21,28 @@ class Phase(str, Enum):
 
 
 class LayerConfig(BaseModel):
+    """Per-layer architecture configuration.
+
+    Attributes:
+        attention: Attention variant — one of "MHA", "GQA", "MLA", "SWA", "Mamba".
+        num_heads: Number of query attention heads. Must divide evenly by TP degree.
+        num_kv_heads: Number of key/value heads (< num_heads for GQA).
+        head_dim: Dimension per attention head.
+        ffn: Feed-forward variant — "SwiGLU" or "MoE".
+        intermediate_size: FFN hidden dimension (used when ffn="SwiGLU").
+        num_experts: Number of MoE experts (1 = dense FFN).
+        num_shared_experts: Number of shared experts in MoE.
+        top_k: Number of experts activated per token in MoE.
+        expert_intermediate_size: Hidden dim per MoE expert.
+        shared_intermediate_size: Hidden dim for shared MoE experts.
+        kv_compression_dim: KV compression dimension (MLA only).
+        query_compression_dim: Query compression dimension (MLA only).
+        rope_dim: RoPE dimension (MLA only).
+        window_size: Sliding window size in tokens (SWA only, 0 = full attention).
+        residual: Residual connection type — "standard" or "mHC".
+        mhc_expansion: Expansion factor for mHC residual.
+    """
+
     attention: str = "GQA"  # MHA, GQA, MLA, SWA, Mamba
     num_heads: int = 32
     num_kv_heads: int = 8
@@ -40,6 +67,19 @@ class LayerConfig(BaseModel):
 
 
 class ModelConfig(BaseModel):
+    """Model architecture configuration.
+
+    Attributes:
+        name: Human-readable model identifier (e.g. "Llama-3-70B").
+        hidden_size: Transformer hidden dimension.
+        vocab_size: Vocabulary size for embedding/LM-head.
+        num_layers: Total number of transformer layers.
+        dtype: Weight data type — "bf16", "fp16", "fp32", or "fp8".
+        default_layer: Template applied to all layers when `layers` is None.
+        layers: Per-layer configs; overrides default_layer if provided.
+        auxiliary: Extra model features, e.g. {"mtp_depth": 2}.
+    """
+
     name: str
     hidden_size: int
     vocab_size: int
@@ -62,6 +102,17 @@ class ModelConfig(BaseModel):
 
 
 class CalibrationConfig(BaseModel):
+    """Hardware efficiency calibration factors (0.0 to 1.0).
+
+    These scale theoretical peak throughput to realistic estimates.
+
+    Attributes:
+        compute_eff_large_gemm: Compute efficiency for large GEMMs (e.g. linear layers).
+        compute_eff_small_op: Compute efficiency for small/element-wise ops.
+        memory_efficiency: HBM bandwidth utilization ratio.
+        comm_efficiency: Inter-/intra-node communication bandwidth utilization.
+    """
+
     compute_eff_large_gemm: float = 0.50
     compute_eff_small_op: float = 0.20
     memory_efficiency: float = 0.70
@@ -69,6 +120,21 @@ class CalibrationConfig(BaseModel):
 
 
 class HardwareConfig(BaseModel):
+    """Hardware specification for a single accelerator device.
+
+    Attributes:
+        name: Device identifier (e.g. "A100-80GB", "H100-SXM").
+        peak_tflops_bf16: Peak BF16 throughput in TFLOPS.
+        hbm_capacity_gb: Total HBM capacity in GB.
+        hbm_bandwidth_tb_s: HBM bandwidth in TB/s.
+        hbm_usable_ratio: Fraction of HBM available after framework overhead (0.0-1.0).
+        intra_node_bw_gb_s: Intra-node interconnect bandwidth in GB/s (e.g. NVLink).
+        inter_node_bw_gb_s: Inter-node network bandwidth in GB/s.
+        inter_node_latency_us: Inter-node latency in microseconds.
+        devices_per_node: Number of accelerators per node.
+        calibration: Efficiency calibration factors.
+    """
+
     name: str
     peak_tflops_bf16: float
     hbm_capacity_gb: float
@@ -86,6 +152,25 @@ class HardwareConfig(BaseModel):
 
 
 class RLConfig(BaseModel):
+    """RL training workload configuration.
+
+    Attributes:
+        total_prompts: Number of unique prompts per epoch.
+        group_size: Responses generated per prompt (for GRPO/group scoring).
+        avg_prompt_len: Average prompt length in tokens.
+        avg_response_len: Average response length in tokens.
+        max_response_len: Maximum response length in tokens (for KV cache sizing).
+        std_response_len: Std-dev of response length in tokens (optional).
+        train_micro_batch_size: Micro-batch size for training (samples).
+        gradient_accumulation_steps: Number of gradient accumulation steps.
+        gen_batch_size: Batch size for generation (samples per device).
+        reference_model: Whether a reference model is kept in memory.
+        ref_offload_cpu: If True, reference model weights are offloaded to CPU.
+        colocated: If True, generation and training share the same devices.
+        use_speculative_decoding: Enable speculative decoding during generation.
+        mtp_acceptance_len: Expected accepted tokens per MTP step (optional).
+    """
+
     total_prompts: int
     group_size: int = 8
     avg_prompt_len: int = 512
@@ -107,6 +192,26 @@ class RLConfig(BaseModel):
 
 
 class ParallelismConfig(BaseModel):
+    """Distributed parallelism configuration.
+
+    Attributes:
+        tp: Tensor parallelism degree. Must be >= 1 and divide num_heads.
+        pp: Pipeline parallelism degree. Must be >= 1 and divide num_layers.
+        dp: Data parallelism degree. Must be >= 1.
+        ep: Expert parallelism degree (for MoE). Must be >= 1.
+        cp: Context parallelism degree. Must be >= 1.
+        cp_type: Context parallelism algorithm — "ring" or "ulysses".
+        sp: Whether sequence parallelism is enabled (replaces AllReduce with
+            AllGather + ReduceScatter).
+        zero_stage: ZeRO optimization stage (0, 1, 2, or 3).
+        pp_schedule: Pipeline schedule — "1f1b", "interleaved", etc.
+        pp_virtual_stages: Virtual pipeline stages for interleaved schedule.
+        recompute_attention: Recompute attention in backward to save activation memory.
+        full_recomputation: Recompute all activations in backward pass.
+        optimizer_offload: Offload optimizer states to CPU.
+        activation_offload: Offload activations to CPU during forward pass.
+    """
+
     tp: int = 1
     pp: int = 1
     dp: int = 1
@@ -135,12 +240,28 @@ class ParallelismConfig(BaseModel):
 
 
 def load_model_config(path: str) -> ModelConfig:
+    """Load a ModelConfig from a YAML file.
+
+    Args:
+        path: Path to the YAML configuration file.
+
+    Returns:
+        Parsed ModelConfig instance.
+    """
     with open(path) as f:
         data = yaml.safe_load(f)
     return ModelConfig(**data)
 
 
 def load_hardware_config(path: str) -> HardwareConfig:
+    """Load a HardwareConfig from a YAML file.
+
+    Args:
+        path: Path to the YAML configuration file.
+
+    Returns:
+        Parsed HardwareConfig instance.
+    """
     with open(path) as f:
         data = yaml.safe_load(f)
     return HardwareConfig(**data)

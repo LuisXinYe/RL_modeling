@@ -15,6 +15,15 @@ from rl_perf.builder import SimOp
 
 @dataclass
 class SimResult:
+    """Result of a multi-stream DAG simulation.
+
+    Attributes:
+        wall_clock_time: Simulated wall-clock time in seconds.
+        weight_bytes: Total deduplicated model weight memory in bytes.
+        peak_activation_bytes: Peak live activation memory in bytes.
+        total_comm_bytes: Total communication volume in bytes.
+    """
+
     wall_clock_time: float  # seconds
     weight_bytes: float  # deduplicated weight total
     peak_activation_bytes: float  # peak live activation memory
@@ -30,6 +39,13 @@ def simulate(ops: List[SimOp]) -> SimResult:
 
     Memory tracking: output_bytes are allocated when op finishes,
     freed when all consumers have completed (ref_count -> 0).
+
+    Args:
+        ops: Ordered list of SimOp nodes forming the computation DAG.
+
+    Returns:
+        SimResult with wall-clock time, weight bytes, peak activation bytes,
+        and total communication bytes.
     """
     if not ops:
         return SimResult(0.0, 0.0, 0.0, 0.0)
