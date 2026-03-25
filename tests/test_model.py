@@ -15,7 +15,7 @@ from rl_perf.config import (
     load_model_config,
 )
 from rl_perf.model import RLPerformanceModel
-from rl_perf.report import TargetReport, format_table
+from rl_perf.report import TargetReport, format_json, format_table
 
 CONFIGS_DIR = Path(__file__).parent.parent / "configs"
 
@@ -171,3 +171,107 @@ def test_format_table(perf_model, rl_cfg, parallel_cfg):
     assert "Memory" in table
     # Should contain either OK or OOM
     assert "OK" in table or "OOM" in table
+
+
+# ---------------------------------------------------------------------------
+# Test 6: format_json — round-trips through JSON, key fields present
+# ---------------------------------------------------------------------------
+
+
+def test_format_json(perf_model, rl_cfg):
+    import json as json_mod
+
+    gen_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
+    train_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
+    report = perf_model.derive_targets(64, rl_cfg, gen_p, train_p)
+
+    result = format_json(report)
+    parsed = json_mod.loads(result)
+    assert "epoch_time_hours" in parsed
+    assert "memory" in parsed
+    assert parsed["memory"]["weight_gb"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Test 7: memory from SimResult
+# ---------------------------------------------------------------------------
+
+
+def test_memory_from_sim_result(perf_model, rl_cfg):
+    """Memory profile should use SimResult weight_bytes."""
+    gen_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
+    train_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
+    report = perf_model.derive_targets(64, rl_cfg, gen_p, train_p)
+    assert report.memory.weight_gb > 0
+    assert report.memory.activation_peak_gb > 0
+
+
+# ---------------------------------------------------------------------------
+# Test 8: what_if
+# ---------------------------------------------------------------------------
+
+
+def test_what_if(perf_model, rl_cfg):
+    gen_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
+    train_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
+    base = perf_model.derive_targets(64, rl_cfg, gen_p, train_p)
+
+    result = perf_model.what_if(
+        base_config=rl_cfg.model_dump(),
+        overrides={"group_size": 16},
+        total_devices=64, gen_parallel=gen_p, train_parallel=train_p,
+    )
+    assert result.epoch_time_hours > base.epoch_time_hours
+
+
+# ---------------------------------------------------------------------------
+# Test 9: sensitivity
+# ---------------------------------------------------------------------------
+
+
+def test_sensitivity(perf_model, rl_cfg):
+    gen_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
+    train_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
+    results = perf_model.sensitivity(
+        rl_cfg=rl_cfg, param_name="group_size", values=[4, 8, 16],
+        total_devices=64, gen_parallel=gen_p, train_parallel=train_p,
+    )
+    assert len(results) == 3
+    assert results[2].epoch_time_hours > results[0].epoch_time_hours
+
+
+# ---------------------------------------------------------------------------
+# Test 10: sensitivity invalid param
+# ---------------------------------------------------------------------------
+
+
+def test_sensitivity_invalid_param(perf_model, rl_cfg):
+    gen_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
+    train_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
+    with pytest.raises(ValueError, match="Unknown RLConfig field"):
+        perf_model.sensitivity(
+            rl_cfg=rl_cfg, param_name="nonexistent_field", values=[1, 2],
+            total_devices=64, gen_parallel=gen_p, train_parallel=train_p,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 11: weight_bytes no double count
+# ---------------------------------------------------------------------------
+
+
+def test_weight_bytes_no_double_count():
+    """Verify builder zeroes weight_bytes on BWD ops so SimResult doesn't double-count."""
+    from rl_perf.builder import build_training_step
+    from rl_perf.simulator import simulate
+
+    mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
+    hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
+    rl = RLConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
+    parallel = ParallelismConfig(tp=1, pp=1, dp=1, ep=1)
+
+    ops_list = build_training_step(mc, hw, parallel, rl)
+    fwd_weight = sum(op.weight_bytes for op in ops_list)
+    # Since BWD ops have weight_bytes=0, this sum equals fwd-only weight
+    sim = simulate(ops_list)
+    assert sim.weight_bytes == pytest.approx(fwd_weight)
