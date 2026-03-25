@@ -13,14 +13,16 @@ from rl_perf.config import HardwareConfig, Phase
 
 @dataclass
 class OpCost:
-    flops: float = 0          # FLOPs count
-    mem_rw: float = 0         # HBM read+write bytes (for roofline)
-    weight_bytes: float = 0   # Persistent weight memory
-    output_bytes: float = 0   # Transient activation/gradient memory
-    comm_bytes: float = 0     # Communication bytes (for comm ops)
+    flops: float = 0  # FLOPs count
+    mem_rw: float = 0  # HBM read+write bytes (for roofline)
+    weight_bytes: float = 0  # Persistent weight memory
+    output_bytes: float = 0  # Transient activation/gradient memory
+    comm_bytes: float = 0  # Communication bytes (for comm ops)
 
 
-def roofline_time(cost: OpCost, hw: HardwareConfig, is_large_gemm: bool = True) -> float:
+def roofline_time(
+    cost: OpCost, hw: HardwareConfig, is_large_gemm: bool = True
+) -> float:
     """Roofline model: time = max(compute_time, memory_time).
 
     Uses two-tier calibration: large GEMM vs small ops.
@@ -80,6 +82,7 @@ def comm_time(
     elif algorithm == "tree":
         # Tree (double binary tree): 2*ceil(log2(N)) steps
         import math
+
         num_steps = 2 * math.ceil(math.log2(max(N, 2)))
         return cost.comm_bytes / bw_bytes + num_steps * lat
     elif algorithm == "alltoall":
@@ -150,8 +153,8 @@ def op_gqa_attention(
     batch_tokens = batch * seq_len
 
     # TP-partitioned output dimensions derived from head counts
-    d_qo = H * head_dim   # Q/O output dim (TP-partitioned via num_heads)
-    d_kv = G * head_dim   # KV output dim (TP-partitioned via num_kv_heads)
+    d_qo = H * head_dim  # Q/O output dim (TP-partitioned via num_heads)
+    d_kv = G * head_dim  # KV output dim (TP-partitioned via num_kv_heads)
 
     # Effective KV length for attention computation
     if phase in (Phase.DECODE,):
@@ -161,13 +164,17 @@ def op_gqa_attention(
         L = seq_len  # prefill/train: attend to self
 
     # Projection FLOPs: Q(2*d*d_qo) + K(2*d*d_kv) + V(2*d*d_kv) + O(2*d_qo*d)
-    proj_flops = (2 * d * d_qo + 2 * d * d_kv + 2 * d * d_kv + 2 * d_qo * d) * batch_tokens
+    proj_flops = (
+        2 * d * d_qo + 2 * d * d_kv + 2 * d * d_kv + 2 * d_qo * d
+    ) * batch_tokens
 
     # Attention FLOPs: QK^T + Softmax*V = 4*d*L per query token
     if phase == Phase.DECODE:
         attn_flops = 4 * d * L * batch  # batch queries, each attending L positions
     else:
-        attn_flops = 4 * d * L * batch_tokens  # each of B*S tokens attends to L positions
+        attn_flops = (
+            4 * d * L * batch_tokens
+        )  # each of B*S tokens attends to L positions
 
     fwd_flops = proj_flops + attn_flops
 
@@ -180,7 +187,9 @@ def op_gqa_attention(
     weight_b = (d * d_qo + d * d_kv + d * d_kv + d_qo * d) * dtype_bytes
 
     # mem_rw: read weights + read input + write output (output dim is d_qo)
-    mem_rw = weight_b + batch_tokens * d * dtype_bytes + batch_tokens * d_qo * dtype_bytes
+    mem_rw = (
+        weight_b + batch_tokens * d * dtype_bytes + batch_tokens * d_qo * dtype_bytes
+    )
 
     # Output activation kept for backward
     if phase == Phase.TRAIN_FWD:
@@ -239,8 +248,8 @@ def op_swa_attention(
     batch_tokens = batch * seq_len
 
     # TP-partitioned output dimensions derived from head counts
-    d_qo = H * head_dim   # Q/O output dim (TP-partitioned via num_heads)
-    d_kv = G * head_dim   # KV output dim (TP-partitioned via num_kv_heads)
+    d_qo = H * head_dim  # Q/O output dim (TP-partitioned via num_heads)
+    d_kv = G * head_dim  # KV output dim (TP-partitioned via num_kv_heads)
 
     # Effective KV length capped by window size
     if phase == Phase.DECODE:
@@ -249,7 +258,9 @@ def op_swa_attention(
         L = min(seq_len, window_size)
 
     # Projection FLOPs: Q(2*d*d_qo) + K(2*d*d_kv) + V(2*d*d_kv) + O(2*d_qo*d)
-    proj_flops = (2 * d * d_qo + 2 * d * d_kv + 2 * d * d_kv + 2 * d_qo * d) * batch_tokens
+    proj_flops = (
+        2 * d * d_qo + 2 * d * d_kv + 2 * d * d_kv + 2 * d_qo * d
+    ) * batch_tokens
 
     if phase == Phase.DECODE:
         attn_flops = 4 * d * L * batch
@@ -266,7 +277,9 @@ def op_swa_attention(
     # Weight bytes: Q(d*d_qo) + K(d*d_kv) + V(d*d_kv) + O(d_qo*d)
     weight_b = (d * d_qo + d * d_kv + d * d_kv + d_qo * d) * dtype_bytes
     # mem_rw: read weights + read input + write output (output dim is d_qo)
-    mem_rw = weight_b + batch_tokens * d * dtype_bytes + batch_tokens * d_qo * dtype_bytes
+    mem_rw = (
+        weight_b + batch_tokens * d * dtype_bytes + batch_tokens * d_qo * dtype_bytes
+    )
 
     if phase == Phase.TRAIN_FWD:
         output_b = batch_tokens * d * dtype_bytes
@@ -296,8 +309,8 @@ def op_mla_attention(
 ) -> OpCost:
     """MLA. Training: 6d·d_c + 4d·d'_c + 2d² + 4sd. Inference: absorbed. Ref: DeepSeek-V2."""
     d = hidden_size
-    d_c = kv_compression_dim        # KV compression dim (c_KV in paper)
-    d_c_q = query_compression_dim   # query compression dim (c_Q)
+    d_c = kv_compression_dim  # KV compression dim (c_KV in paper)
+    d_c_q = query_compression_dim  # query compression dim (c_Q)
     r = rope_dim
     batch_tokens = batch * seq_len
 
@@ -319,12 +332,12 @@ def op_mla_attention(
         # O proj: d -> d: 2*d*d
         # Attention: 4*s*d
         proj_flops = (
-            2 * d * d_c_q       # Q down
-            + 2 * d_c_q * d     # Q up
-            + 2 * d * d_c       # KV down
-            + 2 * d_c * d       # K up
-            + 2 * d_c * d       # V up
-            + 2 * d * d         # O proj
+            2 * d * d_c_q  # Q down
+            + 2 * d_c_q * d  # Q up
+            + 2 * d * d_c  # KV down
+            + 2 * d_c * d  # K up
+            + 2 * d_c * d  # V up
+            + 2 * d * d  # O proj
         ) * query_tokens
         attn_flops = 4 * d * L * query_tokens
         fwd_flops = proj_flops + attn_flops
@@ -348,12 +361,7 @@ def op_mla_attention(
     # Weight bytes: all projection matrices
     # Q down (d * d_c_q) + Q up (d_c_q * d) + KV down (d * d_c) + K up (d_c * d) + V up (d_c * d) + O (d * d)
     weight_b = (
-        d * d_c_q
-        + d_c_q * d
-        + d * d_c
-        + d_c * d
-        + d_c * d
-        + d * d
+        d * d_c_q + d_c_q * d + d * d_c + d_c * d + d_c * d + d * d
     ) * dtype_bytes
 
     mem_rw = weight_b + query_tokens * d * dtype_bytes + query_tokens * d * dtype_bytes
@@ -395,8 +403,8 @@ def op_swiglu_ffn(
 
     mem_rw = (
         weight_b
-        + batch_tokens * hidden_size * dtype_bytes    # read input
-        + batch_tokens * hidden_size * dtype_bytes    # write output
+        + batch_tokens * hidden_size * dtype_bytes  # read input
+        + batch_tokens * hidden_size * dtype_bytes  # write output
     )
 
     if phase == Phase.TRAIN_FWD:
@@ -440,7 +448,9 @@ def op_moe_ffn(
         flops = fwd_flops
 
     # Routed expert weights (all experts loaded to device in MoE)
-    routed_weight_b = num_experts * 3 * hidden_size * expert_intermediate_size * dtype_bytes
+    routed_weight_b = (
+        num_experts * 3 * hidden_size * expert_intermediate_size * dtype_bytes
+    )
     shared_weight_b = (
         num_shared_experts * 3 * hidden_size * shared_intermediate_size * dtype_bytes
         if num_shared_experts > 0
@@ -451,8 +461,8 @@ def op_moe_ffn(
 
     mem_rw = (
         weight_b
-        + batch_tokens * hidden_size * dtype_bytes    # read input
-        + batch_tokens * hidden_size * dtype_bytes    # write output
+        + batch_tokens * hidden_size * dtype_bytes  # read input
+        + batch_tokens * hidden_size * dtype_bytes  # write output
     )
 
     if phase == Phase.TRAIN_FWD:
@@ -512,6 +522,30 @@ def op_mhc_residual(
     )
 
 
+def op_mtp_head(
+    hidden_size: int,
+    vocab_size: int,
+    mtp_depth: int,
+    batch_tokens: int,
+    phase: Phase,
+    dtype_bytes: int = 2,
+) -> OpCost:
+    """MTP extra LM heads. FLOPs = 2·d·V·mtp_depth per token. Ref: DeepSeek-V3 §3.4."""
+    fwd_flops = 2 * hidden_size * vocab_size * mtp_depth * batch_tokens
+    if phase == Phase.TRAIN_BWD:
+        flops = 2 * fwd_flops
+    else:
+        flops = fwd_flops
+    weight_b = hidden_size * vocab_size * dtype_bytes * mtp_depth
+    mem_rw = weight_b + batch_tokens * vocab_size * dtype_bytes
+    output_b = (
+        batch_tokens * vocab_size * dtype_bytes if phase == Phase.TRAIN_FWD else 0
+    )
+    return OpCost(
+        flops=flops, mem_rw=mem_rw, weight_bytes=weight_b, output_bytes=output_b
+    )
+
+
 # ---------------------------------------------------------------------------
 # Communication operator cost functions
 # ---------------------------------------------------------------------------
@@ -550,3 +584,16 @@ def op_alltoall(
 def op_p2p(msg_bytes: float) -> OpCost:
     """Point-to-point communication."""
     return OpCost(comm_bytes=msg_bytes)
+
+
+def op_ring_cp(
+    seq_len: int,
+    cp_size: int,
+    kv_dim: int,
+    dtype_bytes: int = 2,
+) -> OpCost:
+    """Ring CP. 2 × (S/CP) × d_kv × bytes × (CP-1). Ref: parent spec §4.4."""
+    if cp_size <= 1:
+        return OpCost()
+    comm_b = 2 * (seq_len / cp_size) * kv_dim * dtype_bytes * (cp_size - 1)
+    return OpCost(comm_bytes=comm_b)
