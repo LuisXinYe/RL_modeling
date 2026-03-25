@@ -364,3 +364,38 @@ def test_cp_reduces_attention_seq_len(model_cfg, hw):
     compute_time_1 = sum(op.duration for op in ops_1 if op.stream == "compute")
     compute_time_4 = sum(op.duration for op in ops_4 if op.stream == "compute")
     assert compute_time_4 < compute_time_1
+
+
+# ---------------------------------------------------------------------------
+# Test 17: MTP head ops inserted when mtp_depth > 0
+# ---------------------------------------------------------------------------
+
+
+def test_mtp_inserts_head_ops(hw, rl_cfg):
+    """Models with mtp_depth > 0 should have mtp_head ops in training."""
+    mc = ModelConfig(
+        name="test_mtp", hidden_size=4096, vocab_size=32000, num_layers=2, dtype="bf16",
+        default_layer=LayerConfig(
+            attention="GQA", num_heads=32, num_kv_heads=8, head_dim=128,
+            ffn="SwiGLU", intermediate_size=11008,
+        ),
+        auxiliary={"mtp_depth": 1},
+    )
+    parallel = ParallelismConfig(tp=1, pp=1, dp=1, ep=1)
+    all_ops = build_training_step(mc, hw, parallel, rl_cfg)
+    names = [op.name for op in all_ops]
+    assert any("mtp" in n for n in names), f"Should have MTP ops: {names}"
+    mtp_ops = [n for n in names if "mtp" in n]
+    assert len(mtp_ops) == 2  # fwd + bwd
+
+
+# ---------------------------------------------------------------------------
+# Test 18: No MTP ops without auxiliary
+# ---------------------------------------------------------------------------
+
+
+def test_no_mtp_without_auxiliary(model_cfg, hw, parallel_cfg_tp1, rl_cfg):
+    """Models without auxiliary.mtp_depth should have no mtp ops."""
+    all_ops = build_training_step(model_cfg, hw, parallel_cfg_tp1, rl_cfg)
+    names = [op.name for op in all_ops]
+    assert not any("mtp" in n for n in names)
