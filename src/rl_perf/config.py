@@ -217,13 +217,6 @@ class ParallelismConfig(BaseModel):
     dp: int = 1
     ep: int = 1
     cp: int = 1
-
-    @field_validator("tp", "pp", "dp", "ep", "cp")
-    @classmethod
-    def must_be_positive(cls, v, info):
-        if v < 1:
-            raise ValueError(f"{info.field_name} must be >= 1, got {v}")
-        return v
     cp_type: str = "ring"
     sp: bool = False
     zero_stage: int = 0
@@ -233,6 +226,13 @@ class ParallelismConfig(BaseModel):
     full_recomputation: bool = False
     optimizer_offload: bool = False
     activation_offload: bool = False
+
+    @field_validator("tp", "pp", "dp", "ep", "cp")
+    @classmethod
+    def must_be_positive(cls, v, info):
+        if v < 1:
+            raise ValueError(f"{info.field_name} must be >= 1, got {v}")
+        return v
 
     @property
     def total_devices(self) -> int:

@@ -1,3 +1,5 @@
+from enum import Enum
+
 import typer
 import yaml
 from pydantic import ValidationError
@@ -5,6 +7,11 @@ from pydantic import ValidationError
 from rl_perf.config import load_model_config, load_hardware_config, RLConfig, ParallelismConfig
 from rl_perf.model import RLPerformanceModel
 from rl_perf.report import format_table, format_json
+
+
+class OutputFormat(str, Enum):
+    table = "table"
+    json = "json"
 
 app = typer.Typer(help="RL Training Performance Modeling Tool")
 
@@ -22,9 +29,9 @@ def resolve_hardware(hw: str) -> str:
     return hw
 
 
-def _format_output(report, fmt: str) -> str:
+def _format_output(report, fmt: OutputFormat) -> str:
     """Format report as table or JSON."""
-    if fmt == "json":
+    if fmt == OutputFormat.json:
         return format_json(report)
     return format_table(report)
 
@@ -63,7 +70,7 @@ def targets(
     grad_acc: int = typer.Option(1, "--grad-acc"),
     tp: int = typer.Option(8, "--tp"),
     pp: int = typer.Option(1, "--pp"),
-    fmt: str = typer.Option("table", "--format", "-f", help="Output format: table, json"),
+    fmt: OutputFormat = typer.Option(OutputFormat.table, "--format", "-f", help="Output format"),
 ):
     """Derive TPS targets given model, hardware, and RL config."""
     def _run():
@@ -100,7 +107,7 @@ def check(
     group_size: int = typer.Option(8, "--group-size", "-g"),
     tp: int = typer.Option(8, "--tp"),
     pp: int = typer.Option(1, "--pp"),
-    fmt: str = typer.Option("table", "--format", "-f", help="Output format: table, json"),
+    fmt: OutputFormat = typer.Option(OutputFormat.table, "--format", "-f", help="Output format"),
 ):
     """Quick feasibility check."""
     def _run():

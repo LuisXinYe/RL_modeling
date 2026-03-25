@@ -195,7 +195,7 @@ def build_layer_ops(
             batch=batch,
             seq_len=attn_seq_len,
             phase=phase,
-            kv_len=kv_len if kv_len is not None else None,
+            kv_len=kv_len,
             dtype_bytes=dtype_bytes,
         )
     elif attn_type == "SWA":
@@ -210,7 +210,7 @@ def build_layer_ops(
             seq_len=attn_seq_len,
             phase=phase,
             window_size=layer_cfg.window_size,
-            kv_len=kv_len if kv_len is not None else None,
+            kv_len=kv_len,
             dtype_bytes=dtype_bytes,
         )
     elif attn_type == "MLA":
@@ -225,7 +225,7 @@ def build_layer_ops(
             batch=batch,
             seq_len=attn_seq_len,
             phase=phase,
-            kv_len=kv_len if kv_len is not None else None,
+            kv_len=kv_len,
             dtype_bytes=dtype_bytes,
         )
     else:
@@ -617,8 +617,8 @@ def build_training_step(
             prev_dep = len(all_ops) - 1
 
     # ------ DP gradient sync ---------------------------------------------------
+    param_count = _estimate_param_count(model_cfg, parallel_cfg)
     if dp > 1:
-        param_count = _estimate_param_count(model_cfg, parallel_cfg)
         grad_bytes = param_count * dtype_bytes  # gradient same dtype as weights
 
         if parallel_cfg.zero_stage < 3:
@@ -644,7 +644,6 @@ def build_training_step(
         prev_dep = len(all_ops) - 1
 
     # ------ Optimizer step (placeholder) ---------------------------------------
-    param_count = _estimate_param_count(model_cfg, parallel_cfg)
     optim_duration = param_count * 1e-10  # rough placeholder
     optim_op = SimOp(
         name="optimizer_step",

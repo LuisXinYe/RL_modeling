@@ -162,12 +162,11 @@ def test_load_model_config_yaml():
 # Integration tests using real YAML files
 # ---------------------------------------------------------------------------
 
-_CONFIGS_DIR = Path(__file__).parent.parent / "configs"
-CONFIGS_DIR = _CONFIGS_DIR
+CONFIGS_DIR = Path(__file__).parent.parent / "configs"
 
 
 def test_load_real_llama_config():
-    path = _CONFIGS_DIR / "models" / "llama3_1_8b.yaml"
+    path = CONFIGS_DIR / "models" / "llama3_1_8b.yaml"
     model = load_model_config(str(path))
     assert model.name == "Llama-3.1-8B"
     assert model.hidden_size == 4096
@@ -184,7 +183,7 @@ def test_load_real_llama_config():
 
 
 def test_load_real_hardware_config():
-    path = _CONFIGS_DIR / "hardware" / "ascend_910c.yaml"
+    path = CONFIGS_DIR / "hardware" / "ascend_910c.yaml"
     hw = load_hardware_config(str(path))
     assert hw.name == "Ascend 910C"
     assert hw.peak_tflops_bf16 == pytest.approx(800.0)
