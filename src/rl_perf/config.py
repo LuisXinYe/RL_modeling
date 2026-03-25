@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class Phase(str, Enum):
@@ -112,6 +112,13 @@ class ParallelismConfig(BaseModel):
     dp: int = 1
     ep: int = 1
     cp: int = 1
+
+    @field_validator("tp", "pp", "dp", "ep", "cp")
+    @classmethod
+    def must_be_positive(cls, v, info):
+        if v < 1:
+            raise ValueError(f"{info.field_name} must be >= 1, got {v}")
+        return v
     cp_type: str = "ring"
     sp: bool = False
     zero_stage: int = 0

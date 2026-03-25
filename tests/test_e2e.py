@@ -56,7 +56,7 @@ def test_e2e_derive_targets(model_name, tp, pp, dp, ep, expected_max_hours, hw, 
 
 
 @pytest.mark.parametrize("model_name,tp,pp,dp,ep", [
-    ("qwen3_235b_moe", 8, 4, 2, 8),   # MoE with EP
+    ("qwen3_235b_moe", 4, 4, 2, 8),   # MoE with EP (tp=4: num_kv_heads=4)
     ("deepseekv3_671b", 8, 4, 2, 16),  # MLA + MoE + mHC
 ])
 def test_e2e_moe_models(model_name, tp, pp, dp, ep, hw, rl_cfg):
@@ -115,7 +115,7 @@ def test_e2e_full_suite_print(hw, rl_cfg, capsys):
         ("llama3_1_8b", 8, 1, 8, 1),
         ("qwen2_5_72b", 8, 4, 4, 1),
         ("mistral_7b", 8, 1, 8, 1),
-        ("qwen3_235b_moe", 8, 4, 2, 8),
+        ("qwen3_235b_moe", 4, 4, 2, 8),
         ("deepseekv3_671b", 8, 4, 2, 16),
     ]
 

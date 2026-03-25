@@ -406,6 +406,39 @@ def test_no_mtp_without_auxiliary(model_cfg, hw, parallel_cfg_tp1, rl_cfg):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Test: Validation — bad TP / PP rejected at entry points
+# ---------------------------------------------------------------------------
+
+
+def test_build_training_step_rejects_bad_tp():
+    """TP that doesn't divide num_heads should raise ValueError."""
+    mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
+    hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
+    rl = RLConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
+    parallel = ParallelismConfig(tp=6, pp=1, dp=1)
+    with pytest.raises(ValueError, match="num_heads.*divisible.*tp"):
+        build_training_step(mc, hw, parallel, rl)
+
+
+def test_build_generation_step_rejects_bad_tp():
+    mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
+    hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
+    rl = RLConfig(total_prompts=100, group_size=4, gen_batch_size=8)
+    parallel = ParallelismConfig(tp=6, pp=1, dp=1)
+    with pytest.raises(ValueError, match="num_heads.*divisible.*tp"):
+        build_generation_step(mc, hw, parallel, rl)
+
+
+def test_build_training_step_rejects_pp_gt_layers():
+    mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
+    hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
+    rl = RLConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
+    parallel = ParallelismConfig(tp=1, pp=64, dp=1)
+    with pytest.raises(ValueError, match="pp.*layers"):
+        build_training_step(mc, hw, parallel, rl)
+
+
 def test_hybrid_layers_different_types(hw, rl_cfg):
     """Model with per-layer configs should build ops for each layer type."""
     mc = ModelConfig(

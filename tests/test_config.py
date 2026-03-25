@@ -215,3 +215,33 @@ def test_rlconfig_speculative_decoding_set():
     cfg = RLConfig(total_prompts=1000, use_speculative_decoding=True, mtp_acceptance_len=3)
     assert cfg.use_speculative_decoding is True
     assert cfg.mtp_acceptance_len == 3
+
+
+# ---------------------------------------------------------------------------
+# ParallelismConfig validation
+# ---------------------------------------------------------------------------
+
+
+def test_parallelism_config_tp_positive():
+    with pytest.raises(Exception):
+        ParallelismConfig(tp=0)
+
+
+def test_parallelism_config_pp_positive():
+    with pytest.raises(Exception):
+        ParallelismConfig(pp=0)
+
+
+def test_parallelism_config_dp_positive():
+    with pytest.raises(Exception):
+        ParallelismConfig(dp=0)
+
+
+def test_parallelism_config_ep_positive():
+    with pytest.raises(Exception):
+        ParallelismConfig(ep=0)
+
+
+def test_parallelism_config_valid():
+    cfg = ParallelismConfig(tp=4, pp=2, dp=4, ep=1)
+    assert cfg.tp == 4

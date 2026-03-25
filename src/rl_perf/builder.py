@@ -21,6 +21,36 @@ from rl_perf.config import (
 )
 
 
+def _validate_parallelism(model_cfg: ModelConfig, parallel_cfg: ParallelismConfig):
+    """Validate parallelism config against model dimensions."""
+    tp = parallel_cfg.tp
+    pp = parallel_cfg.pp
+    all_layers = model_cfg.get_layers()
+
+    if pp > len(all_layers):
+        raise ValueError(
+            f"pp={pp} exceeds num_layers={len(all_layers)}. "
+            f"pp must be <= number of model layers."
+        )
+
+    for i, layer in enumerate(all_layers):
+        if layer.num_heads % tp != 0:
+            raise ValueError(
+                f"Layer {i}: num_heads={layer.num_heads} not divisible by tp={tp}. "
+                f"Choose tp that evenly divides num_heads."
+            )
+        if layer.attention in ("GQA", "MHA", "SWA") and layer.num_kv_heads % tp != 0:
+            raise ValueError(
+                f"Layer {i}: num_kv_heads={layer.num_kv_heads} not divisible by tp={tp}. "
+                f"Choose tp that evenly divides num_kv_heads."
+            )
+        if layer.ffn == "SwiGLU" and layer.intermediate_size % tp != 0:
+            raise ValueError(
+                f"Layer {i}: intermediate_size={layer.intermediate_size} not divisible by tp={tp}. "
+                f"Choose tp that evenly divides intermediate_size."
+            )
+
+
 @dataclass
 class SimOp:
     name: str
@@ -132,7 +162,7 @@ def build_layer_ops(
         if attn_type == "MLA":
             kv_dim = layer_cfg.kv_compression_dim + layer_cfg.rope_dim
         elif attn_type in ("GQA", "MHA", "SWA"):
-            tp_kv_heads = max(1, layer_cfg.num_kv_heads // tp)
+            tp_kv_heads = layer_cfg.num_kv_heads // tp
             kv_dim = tp_kv_heads * layer_cfg.head_dim
         else:
             kv_dim = layer_cfg.num_kv_heads * layer_cfg.head_dim
@@ -155,8 +185,8 @@ def build_layer_ops(
     attn_type = layer_cfg.attention
 
     if attn_type in ("GQA", "MHA"):
-        tp_num_heads = max(1, layer_cfg.num_heads // tp)
-        tp_kv_heads = max(1, layer_cfg.num_kv_heads // tp)
+        tp_num_heads = layer_cfg.num_heads // tp
+        tp_kv_heads = layer_cfg.num_kv_heads // tp
         attn_cost = ops.op_gqa_attention(
             num_heads=tp_num_heads,
             num_kv_heads=tp_kv_heads,
@@ -169,8 +199,8 @@ def build_layer_ops(
             dtype_bytes=dtype_bytes,
         )
     elif attn_type == "SWA":
-        tp_num_heads = max(1, layer_cfg.num_heads // tp)
-        tp_kv_heads = max(1, layer_cfg.num_kv_heads // tp)
+        tp_num_heads = layer_cfg.num_heads // tp
+        tp_kv_heads = layer_cfg.num_kv_heads // tp
         attn_cost = ops.op_swa_attention(
             num_heads=tp_num_heads,
             num_kv_heads=tp_kv_heads,
@@ -184,7 +214,7 @@ def build_layer_ops(
             dtype_bytes=dtype_bytes,
         )
     elif attn_type == "MLA":
-        tp_num_heads = max(1, layer_cfg.num_heads // tp)
+        tp_num_heads = layer_cfg.num_heads // tp
         attn_cost = ops.op_mla_attention(
             hidden_size=d,
             num_heads=tp_num_heads,
@@ -287,7 +317,7 @@ def build_layer_ops(
     ffn_type = layer_cfg.ffn
 
     if ffn_type == "SwiGLU":
-        tp_intermediate = max(1, layer_cfg.intermediate_size // tp)
+        tp_intermediate = layer_cfg.intermediate_size // tp
         ffn_cost = ops.op_swiglu_ffn(
             hidden_size=d,
             intermediate_size=tp_intermediate,
@@ -424,8 +454,8 @@ def _estimate_param_count(model_cfg: ModelConfig, parallel_cfg: ParallelismConfi
         # Attention
         attn_type = layer_cfg.attention
         if attn_type in ("GQA", "MHA", "SWA"):
-            tp_num_heads = max(1, layer_cfg.num_heads // tp)
-            tp_kv_heads = max(1, layer_cfg.num_kv_heads // tp)
+            tp_num_heads = layer_cfg.num_heads // tp
+            tp_kv_heads = layer_cfg.num_kv_heads // tp
             # Q: d*num_heads*head_dim; K,V: d*kv_heads*head_dim
             # O: RowParallel, input dim = tp_num_heads * head_dim
             q_params = d * tp_num_heads * layer_cfg.head_dim
@@ -446,7 +476,7 @@ def _estimate_param_count(model_cfg: ModelConfig, parallel_cfg: ParallelismConfi
         # FFN
         ffn_type = layer_cfg.ffn
         if ffn_type == "SwiGLU":
-            tp_intermediate = max(1, layer_cfg.intermediate_size // tp)
+            tp_intermediate = layer_cfg.intermediate_size // tp
             param_bytes += 3 * d * tp_intermediate * dtype_bytes
         elif ffn_type == "MoE":
             ep = parallel_cfg.ep
@@ -482,6 +512,7 @@ def build_training_step(
 
     MVP: PP stage 0 only (builds all layers / pp).
     """
+    _validate_parallelism(model_cfg, parallel_cfg)
     pp = parallel_cfg.pp
     dp = parallel_cfg.dp
     dtype_bytes = model_cfg.dtype_bytes
@@ -492,7 +523,7 @@ def build_training_step(
     all_layers = model_cfg.get_layers()
     num_layers_total = len(all_layers)
     # PP stage 0: take the first chunk of layers
-    stage_layers_count = max(1, num_layers_total // pp)
+    stage_layers_count = num_layers_total // pp
     stage_layers = all_layers[:stage_layers_count]
 
     all_ops: List[SimOp] = []
@@ -643,10 +674,11 @@ def build_generation_step(
 
     Returns (prefill_ops, decode_per_token_ops).
     """
+    _validate_parallelism(model_cfg, parallel_cfg)
     pp = parallel_cfg.pp
     all_layers = model_cfg.get_layers()
     num_layers_total = len(all_layers)
-    stage_layers_count = max(1, num_layers_total // pp)
+    stage_layers_count = num_layers_total // pp
     stage_layers = all_layers[:stage_layers_count]
 
     batch = rl_cfg.gen_batch_size

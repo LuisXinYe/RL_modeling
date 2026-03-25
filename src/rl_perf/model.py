@@ -71,7 +71,7 @@ class RLPerformanceModel:
 
         # KV cache for generation — iterate all layers per PP stage
         all_layers = self.model.get_layers()
-        layers_per_stage = max(1, len(all_layers) // gen_parallel.pp)
+        layers_per_stage = len(all_layers) // gen_parallel.pp
         stage_layers = all_layers[:layers_per_stage]
         kv_total = 0
         max_kv_seq = rl_cfg.avg_prompt_len + rl_cfg.max_response_len
@@ -79,13 +79,13 @@ class RLPerformanceModel:
             if layer.attention == "MLA":
                 kv_per_token = (layer.kv_compression_dim + layer.rope_dim) * self.model.dtype_bytes
             elif layer.attention == "SWA" and layer.window_size > 0:
-                kv_heads_per_device = max(1, layer.num_kv_heads // gen_parallel.tp)
+                kv_heads_per_device = layer.num_kv_heads // gen_parallel.tp
                 kv_per_token = 2 * kv_heads_per_device * layer.head_dim * self.model.dtype_bytes
                 # SWA KV cache bounded by window_size
                 kv_total += kv_per_token * rl_cfg.gen_batch_size * min(max_kv_seq, layer.window_size)
                 continue
             else:
-                kv_heads_per_device = max(1, layer.num_kv_heads // gen_parallel.tp)
+                kv_heads_per_device = layer.num_kv_heads // gen_parallel.tp
                 kv_per_token = 2 * kv_heads_per_device * layer.head_dim * self.model.dtype_bytes
             kv_total += kv_per_token * rl_cfg.gen_batch_size * max_kv_seq
         kv_cache_gb = kv_total / 1e9
