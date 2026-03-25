@@ -203,3 +203,15 @@ def test_load_all_model_configs(name):
     mc = load_model_config(str(CONFIGS_DIR / "models" / f"{name}.yaml"))
     assert mc.num_layers > 0
     assert len(mc.get_layers()) == mc.num_layers
+
+
+def test_rlconfig_speculative_decoding_defaults():
+    cfg = RLConfig(total_prompts=1000)
+    assert cfg.use_speculative_decoding is False
+    assert cfg.mtp_acceptance_len is None
+
+
+def test_rlconfig_speculative_decoding_set():
+    cfg = RLConfig(total_prompts=1000, use_speculative_decoding=True, mtp_acceptance_len=3)
+    assert cfg.use_speculative_decoding is True
+    assert cfg.mtp_acceptance_len == 3

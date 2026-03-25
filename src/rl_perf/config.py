@@ -98,6 +98,8 @@ class RLConfig(BaseModel):
     reference_model: bool = True
     ref_offload_cpu: bool = False
     colocated: bool = False
+    use_speculative_decoding: bool = False
+    mtp_acceptance_len: Optional[int] = None
 
     @property
     def total_responses(self) -> int:
