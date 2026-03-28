@@ -31,6 +31,7 @@ _LIGHT_PURPLE = "#c4b5fd"
 # 1. Timeline figure
 # ---------------------------------------------------------------------------
 
+
 def build_timeline_figure(report: TargetReport, colocated: bool) -> go.Figure:
     """Horizontal stacked bar chart (Gantt-style) showing Gen / Train phases.
 
@@ -108,6 +109,7 @@ def build_timeline_figure(report: TargetReport, colocated: bool) -> go.Figure:
 # ---------------------------------------------------------------------------
 # 2. Memory figure
 # ---------------------------------------------------------------------------
+
 
 def build_memory_figure(report: TargetReport) -> go.Figure:
     """Stacked bar chart showing per-device memory breakdown.
@@ -192,6 +194,7 @@ def build_memory_figure(report: TargetReport) -> go.Figure:
 # ---------------------------------------------------------------------------
 # 3. Pareto figure
 # ---------------------------------------------------------------------------
+
 
 def build_pareto_figure(
     results: List[SearchResult],
@@ -304,6 +307,7 @@ def build_pareto_figure(
 # ---------------------------------------------------------------------------
 # 4. Sensitivity figure
 # ---------------------------------------------------------------------------
+
 
 def build_sensitivity_figure(
     param_name: str,
