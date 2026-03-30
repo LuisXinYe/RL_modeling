@@ -31,14 +31,14 @@ Browser (SPA)                    FastAPI Server
 
 ## Layout
 
-Side-by-side: config panel (left, 320px fixed) | results panel (right, flexible).
+Side-by-side: config panel (left, 380px fixed) | results panel (right, flexible).
 
 ```
 ┌──────────────────────────────────────────────────┐
 │  rl-perf    RL Training Performance Modeling      │
 ├──────────┬───────────────────────────────────────┤
 │ CONFIG   │  RESULTS                               │
-│ (320px)  │                                        │
+│ (380px)  │                                        │
 │          │  ┌────┐ ┌────┐ ┌────┐ ┌────┐          │
 │ ▸ Model  │  │Epch│ │Gen │ │Trn │ │Btl │  KPIs   │
 │          │  │1.38│ │38.7│ │41.6│ │Trn │          │
