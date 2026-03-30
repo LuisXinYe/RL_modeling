@@ -529,8 +529,6 @@ def create_app() -> gr.Blocks:
     """Build and return the Gradio Blocks application."""
     with gr.Blocks(
         title="rl-perf -- RL Training Performance Modeling",
-        theme=gr.themes.Soft(),
-        css=_CUSTOM_CSS,
     ) as app:
         gr.Markdown(
             "# rl-perf\n\nRL Training Performance Modeling",
@@ -1071,4 +1069,6 @@ def launch(host: str = "127.0.0.1", port: int = 7860, share: bool = False):
         server_name=host,
         server_port=port,
         share=share,
+        theme=gr.themes.Soft(),
+        css=_CUSTOM_CSS,
     )
