@@ -1,1 +1,616 @@
-<h1>rl-perf</h1>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>rl-perf — RL Training Performance Modeling</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..800;1,9..40,300..800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+</head>
+<body>
+  <!-- ── Header ──────────────────────────────────────────── -->
+  <header class="app-header">
+    <div class="header-brand">
+      <span class="brand-mark">rl-perf</span>
+      <span class="brand-tagline">RL Training Performance Modeling</span>
+    </div>
+  </header>
+
+  <!-- ── Mobile drawer toggle ────────────────────────────── -->
+  <button class="drawer-toggle" id="drawer-toggle" aria-label="Toggle configuration panel">
+    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+  </button>
+  <div class="drawer-overlay" id="drawer-overlay"></div>
+
+  <!-- ── Main layout ─────────────────────────────────────── -->
+  <main class="app-layout">
+
+    <!-- ── Config Panel (Left) ─────────────────────────── -->
+    <aside class="config-panel" id="config-panel">
+      <div class="config-scroll">
+
+        <!-- Model Section -->
+        <section class="accordion-section" data-section="model">
+          <button class="accordion-trigger" aria-expanded="true">
+            <span class="accordion-dot dot-default"></span>
+            <span class="accordion-title">Model</span>
+            <span class="accordion-summary" id="model-summary">Llama-3.1-8B &middot; 32L &middot; GQA &middot; bf16</span>
+            <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+          </button>
+          <div class="accordion-body">
+            <div class="accordion-content">
+
+              <!-- Source selector -->
+              <fieldset class="field-group">
+                <legend class="field-label">Model Source</legend>
+                <div class="segmented-control" id="model-source">
+                  <button class="seg-btn active" data-value="template">Template</button>
+                  <button class="seg-btn" data-value="huggingface">HuggingFace</button>
+                  <button class="seg-btn" data-value="custom">Custom</button>
+                </div>
+              </fieldset>
+
+              <!-- Template dropdown -->
+              <div class="field" id="field-template">
+                <label class="field-label" for="model-template">Template</label>
+                <select class="field-select" id="model-template">
+                  <option value="Llama-3.1-8B">Llama-3.1-8B</option>
+                  <option value="Qwen2.5-72B">Qwen2.5-72B</option>
+                  <option value="Mistral-7B">Mistral-7B</option>
+                  <option value="Qwen3-235B-MoE">Qwen3-235B-MoE</option>
+                  <option value="DeepSeekV3-671B">DeepSeekV3-671B</option>
+                </select>
+              </div>
+
+              <!-- HuggingFace input -->
+              <div class="field hidden" id="field-hf">
+                <label class="field-label" for="hf-model-id">HuggingFace Model ID</label>
+                <div class="field-row">
+                  <input class="field-input" type="text" id="hf-model-id" placeholder="meta-llama/Meta-Llama-3-8B">
+                  <button class="btn btn-sm" id="hf-load-btn">Load</button>
+                </div>
+                <div class="field-hint hidden" id="hf-status"></div>
+              </div>
+
+              <!-- Core fields -->
+              <div class="field">
+                <label class="field-label" for="model-name">Model Name</label>
+                <input class="field-input" type="text" id="model-name" value="Llama-3.1-8B">
+              </div>
+
+              <div class="field-grid cols-2">
+                <div class="field">
+                  <label class="field-label" for="hidden-size">Hidden Size</label>
+                  <input class="field-input" type="number" id="hidden-size" value="4096">
+                </div>
+                <div class="field">
+                  <label class="field-label" for="vocab-size">Vocab Size</label>
+                  <input class="field-input" type="number" id="vocab-size" value="128256">
+                </div>
+              </div>
+
+              <div class="field-grid cols-2">
+                <div class="field">
+                  <label class="field-label" for="num-layers">Num Layers</label>
+                  <input class="field-input" type="number" id="num-layers" value="32">
+                </div>
+                <div class="field">
+                  <label class="field-label" for="dtype">Dtype</label>
+                  <select class="field-select" id="dtype">
+                    <option value="bf16" selected>bf16</option>
+                    <option value="fp16">fp16</option>
+                    <option value="fp32">fp32</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Layer config -->
+              <div class="field-grid cols-3">
+                <div class="field">
+                  <label class="field-label" for="attention-type">Attention</label>
+                  <select class="field-select" id="attention-type">
+                    <option value="MHA">MHA</option>
+                    <option value="GQA" selected>GQA</option>
+                    <option value="MLA">MLA</option>
+                    <option value="SWA">SWA</option>
+                    <option value="Mamba">Mamba</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="ffn-type">FFN</label>
+                  <select class="field-select" id="ffn-type">
+                    <option value="SwiGLU" selected>SwiGLU</option>
+                    <option value="MoE">MoE</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="residual-type">Residual</label>
+                  <select class="field-select" id="residual-type">
+                    <option value="standard" selected>standard</option>
+                    <option value="mHC">mHC</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Attention params -->
+              <div class="field-grid cols-3">
+                <div class="field">
+                  <label class="field-label" for="num-heads">Num Heads</label>
+                  <input class="field-input" type="number" id="num-heads" value="32">
+                </div>
+                <div class="field">
+                  <label class="field-label" for="num-kv-heads">KV Heads</label>
+                  <input class="field-input" type="number" id="num-kv-heads" value="8">
+                </div>
+                <div class="field">
+                  <label class="field-label" for="head-dim">Head Dim</label>
+                  <input class="field-input" type="number" id="head-dim" value="128">
+                </div>
+              </div>
+
+              <div class="field">
+                <label class="field-label" for="intermediate-size">Intermediate Size</label>
+                <input class="field-input" type="number" id="intermediate-size" value="14336">
+              </div>
+
+              <!-- MLA conditional fields -->
+              <div class="conditional-fields hidden" id="mla-fields">
+                <div class="field-grid cols-3">
+                  <div class="field">
+                    <label class="field-label" for="kv-compression-dim">KV Comp Dim</label>
+                    <input class="field-input" type="number" id="kv-compression-dim" value="0">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="query-compression-dim">Q Comp Dim</label>
+                    <input class="field-input" type="number" id="query-compression-dim" value="0">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="rope-dim">RoPE Dim</label>
+                    <input class="field-input" type="number" id="rope-dim" value="0">
+                  </div>
+                </div>
+              </div>
+
+              <!-- SWA conditional fields -->
+              <div class="conditional-fields hidden" id="swa-fields">
+                <div class="field">
+                  <label class="field-label" for="window-size">Window Size</label>
+                  <input class="field-input" type="number" id="window-size" value="0">
+                </div>
+              </div>
+
+              <!-- MoE conditional fields -->
+              <div class="conditional-fields hidden" id="moe-fields">
+                <div class="field-grid cols-3">
+                  <div class="field">
+                    <label class="field-label" for="num-experts">Num Experts</label>
+                    <input class="field-input" type="number" id="num-experts" value="1">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="top-k">Top-K</label>
+                    <input class="field-input" type="number" id="top-k" value="1">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="shared-experts">Shared Experts</label>
+                    <input class="field-input" type="number" id="shared-experts" value="0">
+                  </div>
+                </div>
+                <div class="field-grid cols-2">
+                  <div class="field">
+                    <label class="field-label" for="expert-intermediate-size">Expert Interm.</label>
+                    <input class="field-input" type="number" id="expert-intermediate-size" value="0">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="shared-intermediate-size">Shared Interm.</label>
+                    <input class="field-input" type="number" id="shared-intermediate-size" value="0">
+                  </div>
+                </div>
+              </div>
+
+              <!-- mHC conditional fields -->
+              <div class="conditional-fields hidden" id="mhc-fields">
+                <div class="field">
+                  <label class="field-label" for="mhc-expansion">Expansion Factor</label>
+                  <input class="field-input" type="number" id="mhc-expansion" value="4">
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </section>
+
+        <!-- Hardware Section -->
+        <section class="accordion-section" data-section="hardware">
+          <button class="accordion-trigger" aria-expanded="false">
+            <span class="accordion-dot dot-default"></span>
+            <span class="accordion-title">Hardware</span>
+            <span class="accordion-summary" id="hardware-summary">Ascend 910C &middot; 8 devices &middot; 1 node</span>
+            <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+          </button>
+          <div class="accordion-body">
+            <div class="accordion-content">
+
+              <div class="field">
+                <label class="field-label" for="hw-profile">Hardware Profile</label>
+                <select class="field-select" id="hw-profile">
+                  <option value="Ascend 910C" selected>Ascend 910C</option>
+                  <option value="CloudMatrix 384">CloudMatrix 384</option>
+                </select>
+              </div>
+
+              <div class="field-grid cols-3">
+                <div class="field">
+                  <label class="field-label" for="total-devices">Total Devices</label>
+                  <input class="field-input" type="number" id="total-devices" value="8" min="1">
+                </div>
+                <div class="field">
+                  <label class="field-label" for="devices-per-node">Per Node</label>
+                  <input class="field-input readonly" type="number" id="devices-per-node" value="8" readonly>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="num-nodes">Nodes</label>
+                  <input class="field-input readonly" type="number" id="num-nodes" value="1" readonly>
+                </div>
+              </div>
+
+              <!-- 6D Parallelism -->
+              <fieldset class="field-group">
+                <legend class="field-label">Parallelism</legend>
+                <div class="field-grid cols-3">
+                  <div class="field">
+                    <label class="field-label" for="par-tp">TP</label>
+                    <input class="field-input" type="number" id="par-tp" value="1" min="1">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="par-pp">PP</label>
+                    <input class="field-input" type="number" id="par-pp" value="1" min="1">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="par-dp">DP</label>
+                    <input class="field-input readonly" type="number" id="par-dp" value="8" readonly>
+                  </div>
+                </div>
+                <div class="field-grid cols-3">
+                  <div class="field">
+                    <label class="field-label" for="par-ep">EP</label>
+                    <input class="field-input" type="number" id="par-ep" value="1" min="1">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="par-cp">CP</label>
+                    <input class="field-input" type="number" id="par-cp" value="1" min="1">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="cp-type">CP Type</label>
+                    <select class="field-select" id="cp-type">
+                      <option value="ring" selected>ring</option>
+                      <option value="ulysses">ulysses</option>
+                    </select>
+                  </div>
+                </div>
+              </fieldset>
+
+              <div class="field-grid cols-3">
+                <div class="field">
+                  <label class="field-label field-label-inline">
+                    <input type="checkbox" id="par-sp"> SP
+                  </label>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="zero-stage">ZeRO</label>
+                  <select class="field-select" id="zero-stage">
+                    <option value="0" selected>Stage 0</option>
+                    <option value="1">Stage 1</option>
+                    <option value="2">Stage 2</option>
+                    <option value="3">Stage 3</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="pp-schedule">PP Sched</label>
+                  <select class="field-select" id="pp-schedule">
+                    <option value="1f1b" selected>1f1b</option>
+                    <option value="interleaved">interleaved</option>
+                    <option value="zero_bubble">zero_bubble</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Memory Optimizations -->
+              <fieldset class="field-group">
+                <legend class="field-label">Memory Optimizations</legend>
+                <div class="checkbox-grid">
+                  <label class="field-label field-label-inline">
+                    <input type="checkbox" id="recompute-attn"> Recompute Attention
+                  </label>
+                  <label class="field-label field-label-inline">
+                    <input type="checkbox" id="full-recompute"> Full Recomputation
+                  </label>
+                  <label class="field-label field-label-inline">
+                    <input type="checkbox" id="opt-offload"> Optimizer Offload
+                  </label>
+                  <label class="field-label field-label-inline">
+                    <input type="checkbox" id="act-offload"> Activation Offload
+                  </label>
+                </div>
+              </fieldset>
+
+            </div>
+          </div>
+        </section>
+
+        <!-- RL Training Section -->
+        <section class="accordion-section" data-section="rl">
+          <button class="accordion-trigger" aria-expanded="false">
+            <span class="accordion-dot dot-default"></span>
+            <span class="accordion-title">RL Training</span>
+            <span class="accordion-summary" id="rl-summary">10k prompts &middot; grp=8 &middot; separate &middot; ref model</span>
+            <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+          </button>
+          <div class="accordion-body">
+            <div class="accordion-content">
+
+              <!-- Data -->
+              <fieldset class="field-group">
+                <legend class="field-label">Data</legend>
+                <div class="field-grid cols-3">
+                  <div class="field">
+                    <label class="field-label" for="total-prompts">Prompts</label>
+                    <input class="field-input" type="number" id="total-prompts" value="10000" min="1">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="group-size">Group Size</label>
+                    <input class="field-input" type="number" id="group-size" value="8" min="1">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="total-responses">Responses</label>
+                    <input class="field-input readonly" type="number" id="total-responses" value="80000" readonly>
+                  </div>
+                </div>
+              </fieldset>
+
+              <div class="field">
+                <label class="field-label" for="time-budget">Time Budget (hours)</label>
+                <input class="field-input" type="number" id="time-budget" value="1" step="0.1" min="0.1">
+              </div>
+
+              <!-- Sequence Lengths -->
+              <fieldset class="field-group">
+                <legend class="field-label">Sequence Lengths</legend>
+                <div class="field-grid cols-2">
+                  <div class="field">
+                    <label class="field-label" for="avg-prompt-len">Avg Prompt</label>
+                    <input class="field-input" type="number" id="avg-prompt-len" value="512">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="avg-response-len">Avg Response</label>
+                    <input class="field-input" type="number" id="avg-response-len" value="2048">
+                  </div>
+                </div>
+                <div class="field-grid cols-2">
+                  <div class="field">
+                    <label class="field-label" for="max-response-len">Max Response</label>
+                    <input class="field-input" type="number" id="max-response-len" value="4096">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="std-response-len">Std Response</label>
+                    <input class="field-input" type="number" id="std-response-len" placeholder="optional">
+                  </div>
+                </div>
+              </fieldset>
+
+              <!-- Batch Settings -->
+              <fieldset class="field-group">
+                <legend class="field-label">Batch Settings</legend>
+                <div class="field-grid cols-3">
+                  <div class="field">
+                    <label class="field-label" for="train-mbs">Train MBS</label>
+                    <input class="field-input" type="number" id="train-mbs" value="4" min="1">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="grad-accum">Grad Accum</label>
+                    <input class="field-input" type="number" id="grad-accum" value="1" min="1">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="gen-batch-size">Gen Batch</label>
+                    <input class="field-input" type="number" id="gen-batch-size" value="64" min="1">
+                  </div>
+                </div>
+              </fieldset>
+
+              <!-- Deployment -->
+              <fieldset class="field-group">
+                <legend class="field-label">Deployment</legend>
+                <div class="field-grid cols-2">
+                  <div class="field">
+                    <label class="field-label" for="deploy-mode">Mode</label>
+                    <select class="field-select" id="deploy-mode">
+                      <option value="separate" selected>Separate</option>
+                      <option value="colocated">Colocated</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label class="field-label field-label-inline">
+                      <input type="checkbox" id="ref-model" checked> Reference Model
+                    </label>
+                  </div>
+                </div>
+                <div class="field-grid cols-2">
+                  <div class="field">
+                    <label class="field-label field-label-inline">
+                      <input type="checkbox" id="ref-offload"> Ref Offload CPU
+                    </label>
+                  </div>
+                  <div class="field">
+                    <label class="field-label field-label-inline">
+                      <input type="checkbox" id="spec-decode"> Speculative Decoding
+                    </label>
+                  </div>
+                </div>
+              </fieldset>
+
+              <!-- MTP conditional -->
+              <div class="conditional-fields hidden" id="mtp-fields">
+                <div class="field">
+                  <label class="field-label" for="mtp-acceptance-len">MTP Acceptance Length</label>
+                  <input class="field-input" type="number" id="mtp-acceptance-len" value="3" min="1">
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </section>
+
+        <!-- Search Section -->
+        <section class="accordion-section" data-section="search">
+          <button class="accordion-trigger" aria-expanded="false">
+            <span class="accordion-dot dot-default"></span>
+            <span class="accordion-title">Search</span>
+            <span class="accordion-summary" id="search-summary">Pareto &middot; 5 device counts</span>
+            <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+          </button>
+          <div class="accordion-body">
+            <div class="accordion-content">
+
+              <fieldset class="field-group">
+                <legend class="field-label">Search Mode</legend>
+                <div class="segmented-control" id="search-mode">
+                  <button class="seg-btn active" data-value="pareto">Pareto</button>
+                  <button class="seg-btn" data-value="sensitivity">Sensitivity</button>
+                </div>
+              </fieldset>
+
+              <!-- Pareto fields -->
+              <div id="pareto-fields">
+                <div class="field">
+                  <label class="field-label" for="device-counts">Device Counts</label>
+                  <input class="field-input" type="text" id="device-counts" value="8,16,32,64,128">
+                </div>
+                <div class="field">
+                  <label class="field-label" for="opt-target">Optimization Target</label>
+                  <select class="field-select" id="opt-target">
+                    <option value="epoch_time_hours" selected>Epoch Time</option>
+                    <option value="gen_tps_target">Gen TPS</option>
+                    <option value="train_tps_target">Train TPS</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- Sensitivity fields -->
+              <div id="sensitivity-fields" class="hidden">
+                <div class="field">
+                  <label class="field-label" for="sweep-param">Sweep Parameter</label>
+                  <select class="field-select" id="sweep-param">
+                    <option value="group_size" selected>group_size</option>
+                    <option value="total_prompts">total_prompts</option>
+                    <option value="gen_batch_size">gen_batch_size</option>
+                    <option value="train_micro_batch_size">train_micro_batch_size</option>
+                    <option value="avg_response_len">avg_response_len</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="sweep-values">Sweep Values</label>
+                  <input class="field-input" type="text" id="sweep-values" value="4,8,16,32">
+                </div>
+              </div>
+
+              <button class="btn btn-secondary btn-block" id="run-search-btn">
+                Run Search
+              </button>
+
+            </div>
+          </div>
+        </section>
+
+      </div>
+
+      <!-- Sticky run button -->
+      <div class="config-footer">
+        <button class="btn btn-primary btn-block" id="run-btn">
+          <span class="btn-label">Run Analysis</span>
+          <svg class="btn-spinner hidden" width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="2" fill="none" stroke-dasharray="28" stroke-dashoffset="8"><animateTransform attributeName="transform" type="rotate" from="0 8 8" to="360 8 8" dur="0.8s" repeatCount="indefinite"/></circle></svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ── Results Panel (Right) ───────────────────────── -->
+    <div class="results-panel" id="results-panel">
+
+      <!-- KPI Cards -->
+      <div class="kpi-row" id="kpi-row">
+        <div class="kpi-card" id="kpi-epoch" data-status="neutral">
+          <div class="kpi-label">Epoch Time</div>
+          <div class="kpi-value">&mdash;</div>
+          <div class="kpi-detail">awaiting analysis</div>
+        </div>
+        <div class="kpi-card" id="kpi-gen" data-status="neutral">
+          <div class="kpi-label">Gen TPS</div>
+          <div class="kpi-value">&mdash;</div>
+          <div class="kpi-detail">awaiting analysis</div>
+        </div>
+        <div class="kpi-card" id="kpi-train" data-status="neutral">
+          <div class="kpi-label">Train TPS</div>
+          <div class="kpi-value">&mdash;</div>
+          <div class="kpi-detail">awaiting analysis</div>
+        </div>
+        <div class="kpi-card" id="kpi-bottleneck" data-status="neutral">
+          <div class="kpi-label">Bottleneck</div>
+          <div class="kpi-value">&mdash;</div>
+          <div class="kpi-detail">awaiting analysis</div>
+        </div>
+      </div>
+
+      <!-- Error banner -->
+      <div class="error-banner hidden" id="error-banner">
+        <span class="error-text" id="error-text"></span>
+        <button class="error-close" id="error-close">&times;</button>
+      </div>
+
+      <!-- Chart area -->
+      <div class="chart-area" id="chart-area">
+        <!-- Tabs -->
+        <div class="chart-tabs" id="chart-tabs">
+          <button class="chart-tab active" data-tab="timeline">Timeline</button>
+          <button class="chart-tab" data-tab="memory">Memory</button>
+          <button class="chart-tab" data-tab="topology">Topology</button>
+          <button class="chart-tab" data-tab="search-results">Search Results</button>
+        </div>
+
+        <!-- Chart panels -->
+        <div class="chart-panel active" id="panel-timeline">
+          <div class="chart-container" id="chart-timeline"></div>
+        </div>
+        <div class="chart-panel" id="panel-memory">
+          <div class="chart-container" id="chart-memory"></div>
+        </div>
+        <div class="chart-panel" id="panel-topology">
+          <div class="chart-container" id="chart-topology"></div>
+        </div>
+        <div class="chart-panel" id="panel-search-results">
+          <div class="chart-container" id="chart-search"></div>
+          <div class="search-table-wrap hidden" id="search-table-wrap">
+            <table class="search-table" id="search-table">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Empty state -->
+        <div class="empty-state" id="empty-state">
+          <p>Configure your model and hardware, then click <strong>Run Analysis</strong> to see performance predictions.</p>
+        </div>
+
+        <!-- Loading state -->
+        <div class="chart-loading hidden" id="chart-loading">
+          <svg class="loading-spinner" width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" stroke="var(--accent)" stroke-width="3" fill="none" stroke-dasharray="56" stroke-dashoffset="14"><animateTransform attributeName="transform" type="rotate" from="0 16 16" to="360 16 16" dur="0.8s" repeatCount="indefinite"/></circle></svg>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
