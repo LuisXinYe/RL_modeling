@@ -62,6 +62,7 @@
                   <option value="Mistral-7B">Mistral-7B</option>
                   <option value="Qwen3-235B-MoE">Qwen3-235B-MoE</option>
                   <option value="DeepSeekV3-671B">DeepSeekV3-671B</option>
+                  <option value="Pangu-74B-VL">Pangu-74B-VL</option>
                 </select>
               </div>
 
@@ -116,7 +117,6 @@
                     <option value="GQA" selected>GQA</option>
                     <option value="MLA">MLA</option>
                     <option value="SWA">SWA</option>
-                    <option value="Mamba">Mamba</option>
                   </select>
                 </div>
                 <div class="field">
@@ -218,6 +218,90 @@
                 </div>
               </div>
 
+              <!-- Layers Summary Badge (read-only, shown for mixed-layer models) -->
+              <div class="field hidden" id="field-layers-summary">
+                <label class="field-label">Layers Summary</label>
+                <span class="layers-summary-badge" id="layers-summary-badge"></span>
+              </div>
+
+              <!-- Vision Encoder -->
+              <div class="conditional-fields hidden" id="ve-fields">
+                <div class="field">
+                  <label class="field-label field-label-inline">
+                    <input type="checkbox" id="has-vision-encoder"> Vision Encoder
+                  </label>
+                </div>
+                <div class="field-grid cols-2">
+                  <div class="field">
+                    <label class="field-label" for="ve-hidden-size">ViT Hidden</label>
+                    <input class="field-input" type="number" id="ve-hidden-size" value="1536">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="ve-num-layers">ViT Layers</label>
+                    <input class="field-input" type="number" id="ve-num-layers" value="26">
+                  </div>
+                </div>
+                <div class="field-grid cols-2">
+                  <div class="field">
+                    <label class="field-label" for="ve-num-heads">ViT Heads</label>
+                    <input class="field-input" type="number" id="ve-num-heads" value="16">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="ve-intermediate-size">ViT Interm.</label>
+                    <input class="field-input" type="number" id="ve-intermediate-size" value="4608">
+                  </div>
+                </div>
+                <div class="field-grid cols-2">
+                  <div class="field">
+                    <label class="field-label" for="ve-ffn">ViT FFN</label>
+                    <select class="field-select" id="ve-ffn">
+                      <option value="SwiGLU" selected>SwiGLU</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="ve-image-seq-len">Image Seq Len</label>
+                    <input class="field-input readonly" type="number" id="ve-image-seq-len" value="576" readonly>
+                  </div>
+                </div>
+                <div class="field-grid cols-3">
+                  <div class="field">
+                    <label class="field-label" for="ve-anyres-max-pixels">Max Pixels</label>
+                    <input class="field-input" type="number" id="ve-anyres-max-pixels" value="1806336">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="ve-patch-size">Patch Size</label>
+                    <input class="field-input" type="number" id="ve-patch-size" value="14">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="ve-temporal-patch-size">Temporal Patch</label>
+                    <input class="field-input" type="number" id="ve-temporal-patch-size" value="2">
+                  </div>
+                </div>
+                <div class="field-grid cols-2">
+                  <div class="field">
+                    <label class="field-label" for="ve-merge-size">Merge Size</label>
+                    <input class="field-input" type="number" id="ve-merge-size" value="2">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="ve-token-down-size">Token Down Size</label>
+                    <input class="field-input" type="number" id="ve-token-down-size" value="2">
+                  </div>
+                </div>
+              </div>
+
+              <!-- MTP Auxiliary -->
+              <div class="conditional-fields hidden" id="mtp-aux-fields">
+                <div class="field">
+                  <label class="field-label field-label-inline">
+                    <input type="checkbox" id="has-mtp-aux"> MTP Auxiliary
+                  </label>
+                </div>
+                <div class="field">
+                  <label class="field-label" for="mtp-depth">MTP Depth</label>
+                  <input class="field-input" type="number" id="mtp-depth" value="1" min="1">
+                </div>
+              </div>
+
             </div>
           </div>
         </section>
@@ -236,6 +320,7 @@
               <div class="field">
                 <label class="field-label" for="hw-profile">Hardware Profile</label>
                 <select class="field-select" id="hw-profile">
+                  <option value="Ascend 910B">Ascend 910B</option>
                   <option value="Ascend 910C" selected>Ascend 910C</option>
                   <option value="CloudMatrix 384">CloudMatrix 384</option>
                 </select>
@@ -256,83 +341,160 @@
                 </div>
               </div>
 
-              <!-- 6D Parallelism -->
+              <!-- 6D Parallelism — 3-Phase -->
               <fieldset class="field-group">
                 <legend class="field-label">Parallelism</legend>
-                <div class="field-grid cols-3">
-                  <div class="field">
-                    <label class="field-label" for="par-tp">TP</label>
-                    <input class="field-input" type="number" id="par-tp" value="1" min="1">
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="par-pp">PP</label>
-                    <input class="field-input" type="number" id="par-pp" value="1" min="1">
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="par-dp">DP</label>
-                    <input class="field-input readonly" type="number" id="par-dp" value="8" readonly>
-                  </div>
+                <div class="segmented-control" id="par-phase">
+                  <button class="seg-btn active" data-value="train">Train</button>
+                  <button class="seg-btn" data-value="gen">Gen</button>
+                  <button class="seg-btn" data-value="ref">Ref</button>
                 </div>
-                <div class="field-grid cols-3">
-                  <div class="field">
-                    <label class="field-label" for="par-ep">EP</label>
-                    <input class="field-input" type="number" id="par-ep" value="1" min="1">
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="par-cp">CP</label>
-                    <input class="field-input" type="number" id="par-cp" value="1" min="1">
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="cp-type">CP Type</label>
-                    <select class="field-select" id="cp-type">
-                      <option value="ring" selected>ring</option>
-                      <option value="ulysses">ulysses</option>
-                    </select>
-                  </div>
-                </div>
-              </fieldset>
 
-              <div class="field-grid cols-3">
-                <div class="field">
-                  <label class="field-label field-label-inline">
-                    <input type="checkbox" id="par-sp"> SP
-                  </label>
+                <!-- Train panel -->
+                <div id="par-panel-train">
+                  <div class="field-grid cols-3">
+                    <div class="field">
+                      <label class="field-label" for="train-tp">TP</label>
+                      <input class="field-input" type="number" id="train-tp" value="1" min="1">
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="train-pp">PP</label>
+                      <input class="field-input" type="number" id="train-pp" value="1" min="1">
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="train-dp">DP</label>
+                      <input class="field-input" type="number" id="train-dp" value="8" min="1">
+                    </div>
+                  </div>
+                  <div class="field-grid cols-3">
+                    <div class="field">
+                      <label class="field-label" for="train-ep">EP</label>
+                      <input class="field-input" type="number" id="train-ep" value="1" min="1">
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="train-cp">CP</label>
+                      <input class="field-input" type="number" id="train-cp" value="1" min="1">
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="train-cp-type">CP Type</label>
+                      <select class="field-select" id="train-cp-type">
+                        <option value="ring" selected>ring</option>
+                        <option value="ulysses">ulysses</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div class="field-grid cols-3">
+                    <div class="field">
+                      <label class="field-label field-label-inline">
+                        <input type="checkbox" id="train-sp"> SP
+                      </label>
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="train-zero-stage">ZeRO</label>
+                      <select class="field-select" id="train-zero-stage">
+                        <option value="0" selected>Stage 0</option>
+                        <option value="1">Stage 1</option>
+                        <option value="2">Stage 2</option>
+                        <option value="3">Stage 3</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="train-pp-schedule">PP Sched</label>
+                      <select class="field-select" id="train-pp-schedule">
+                        <option value="1f1b" selected>1f1b</option>
+                        <option value="interleaved">interleaved</option>
+                        <option value="zero_bubble">zero_bubble</option>
+                      </select>
+                    </div>
+                  </div>
+                  <!-- Memory Optimizations (Train) -->
+                  <fieldset class="field-group">
+                    <legend class="field-label">Memory Optimizations</legend>
+                    <div class="checkbox-grid">
+                      <label class="field-label field-label-inline">
+                        <input type="checkbox" id="train-recompute-attn"> Recompute Attention
+                      </label>
+                      <label class="field-label field-label-inline">
+                        <input type="checkbox" id="train-full-recompute"> Full Recomputation
+                      </label>
+                      <label class="field-label field-label-inline">
+                        <input type="checkbox" id="train-opt-offload"> Optimizer Offload
+                      </label>
+                      <label class="field-label field-label-inline">
+                        <input type="checkbox" id="train-act-offload"> Activation Offload
+                      </label>
+                      <label class="field-label field-label-inline">
+                        <input type="checkbox" id="train-param-offload"> Param Offload
+                      </label>
+                      <label class="field-label field-label-inline">
+                        <input type="checkbox" id="train-grad-offload"> Grad Offload
+                      </label>
+                    </div>
+                  </fieldset>
                 </div>
-                <div class="field">
-                  <label class="field-label" for="zero-stage">ZeRO</label>
-                  <select class="field-select" id="zero-stage">
-                    <option value="0" selected>Stage 0</option>
-                    <option value="1">Stage 1</option>
-                    <option value="2">Stage 2</option>
-                    <option value="3">Stage 3</option>
-                  </select>
-                </div>
-                <div class="field">
-                  <label class="field-label" for="pp-schedule">PP Sched</label>
-                  <select class="field-select" id="pp-schedule">
-                    <option value="1f1b" selected>1f1b</option>
-                    <option value="interleaved">interleaved</option>
-                    <option value="zero_bubble">zero_bubble</option>
-                  </select>
-                </div>
-              </div>
 
-              <!-- Memory Optimizations -->
-              <fieldset class="field-group">
-                <legend class="field-label">Memory Optimizations</legend>
-                <div class="checkbox-grid">
-                  <label class="field-label field-label-inline">
-                    <input type="checkbox" id="recompute-attn"> Recompute Attention
-                  </label>
-                  <label class="field-label field-label-inline">
-                    <input type="checkbox" id="full-recompute"> Full Recomputation
-                  </label>
-                  <label class="field-label field-label-inline">
-                    <input type="checkbox" id="opt-offload"> Optimizer Offload
-                  </label>
-                  <label class="field-label field-label-inline">
-                    <input type="checkbox" id="act-offload"> Activation Offload
-                  </label>
+                <!-- Gen panel -->
+                <div id="par-panel-gen" class="hidden">
+                  <div class="field-grid cols-3">
+                    <div class="field">
+                      <label class="field-label" for="gen-tp">TP</label>
+                      <input class="field-input" type="number" id="gen-tp" value="1" min="1">
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="gen-pp">PP</label>
+                      <input class="field-input" type="number" id="gen-pp" value="1" min="1">
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="gen-dp">DP</label>
+                      <input class="field-input" type="number" id="gen-dp" value="8" min="1">
+                    </div>
+                  </div>
+                  <div class="field-grid cols-3">
+                    <div class="field">
+                      <label class="field-label" for="gen-ep">EP</label>
+                      <input class="field-input" type="number" id="gen-ep" value="1" min="1">
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="gen-cp">CP</label>
+                      <input class="field-input" type="number" id="gen-cp" value="1" min="1">
+                    </div>
+                    <div class="field">
+                      <label class="field-label">&nbsp;</label>
+                      <span></span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Ref panel -->
+                <div id="par-panel-ref" class="hidden">
+                  <div class="field-grid cols-3">
+                    <div class="field">
+                      <label class="field-label" for="ref-tp">TP</label>
+                      <input class="field-input" type="number" id="ref-tp" value="1" min="1">
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="ref-pp">PP</label>
+                      <input class="field-input" type="number" id="ref-pp" value="1" min="1">
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="ref-dp">DP</label>
+                      <input class="field-input" type="number" id="ref-dp" value="8" min="1">
+                    </div>
+                  </div>
+                  <div class="field-grid cols-3">
+                    <div class="field">
+                      <label class="field-label" for="ref-ep">EP</label>
+                      <input class="field-input" type="number" id="ref-ep" value="1" min="1">
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="ref-cp">CP</label>
+                      <input class="field-input" type="number" id="ref-cp" value="1" min="1">
+                    </div>
+                    <div class="field">
+                      <label class="field-label">&nbsp;</label>
+                      <span></span>
+                    </div>
+                  </div>
                 </div>
               </fieldset>
 
@@ -354,26 +516,17 @@
               <!-- Data -->
               <fieldset class="field-group">
                 <legend class="field-label">Data</legend>
-                <div class="field-grid cols-3">
-                  <div class="field">
-                    <label class="field-label" for="total-prompts">Prompts</label>
-                    <input class="field-input" type="number" id="total-prompts" value="10000" min="1">
-                  </div>
+                <div class="field-grid cols-2">
                   <div class="field">
                     <label class="field-label" for="group-size">Group Size</label>
                     <input class="field-input" type="number" id="group-size" value="8" min="1">
                   </div>
                   <div class="field">
-                    <label class="field-label" for="total-responses">Responses</label>
-                    <input class="field-input readonly" type="number" id="total-responses" value="80000" readonly>
+                    <label class="field-label" for="train-batch-size">Train Batch</label>
+                    <input class="field-input" type="number" id="train-batch-size" value="36" min="1">
                   </div>
                 </div>
               </fieldset>
-
-              <div class="field">
-                <label class="field-label" for="time-budget">Time Budget (hours)</label>
-                <input class="field-input" type="number" id="time-budget" value="1" step="0.1" min="0.1">
-              </div>
 
               <!-- Sequence Lengths -->
               <fieldset class="field-group">
@@ -490,7 +643,7 @@
                 <div class="field">
                   <label class="field-label" for="opt-target">Optimization Target</label>
                   <select class="field-select" id="opt-target">
-                    <option value="epoch_time_hours" selected>Epoch Time</option>
+                    <option value="step_time_seconds" selected>Step Time</option>
                     <option value="gen_tps_target">Gen TPS</option>
                     <option value="train_tps_target">Train TPS</option>
                   </select>
@@ -503,7 +656,7 @@
                   <label class="field-label" for="sweep-param">Sweep Parameter</label>
                   <select class="field-select" id="sweep-param">
                     <option value="group_size" selected>group_size</option>
-                    <option value="total_prompts">total_prompts</option>
+                    <option value="train_batch_size">train_batch_size</option>
                     <option value="gen_batch_size">gen_batch_size</option>
                     <option value="train_micro_batch_size">train_micro_batch_size</option>
                     <option value="avg_response_len">avg_response_len</option>
@@ -562,7 +715,7 @@
       <!-- KPI Cards -->
       <div class="kpi-row" id="kpi-row">
         <div class="kpi-card" id="kpi-epoch" data-status="neutral">
-          <div class="kpi-label">Epoch Time</div>
+          <div class="kpi-label">Step Time</div>
           <div class="kpi-value">&mdash;</div>
           <div class="kpi-detail">awaiting analysis</div>
         </div>
@@ -576,8 +729,8 @@
           <div class="kpi-value">&mdash;</div>
           <div class="kpi-detail">awaiting analysis</div>
         </div>
-        <div class="kpi-card" id="kpi-bottleneck" data-status="neutral">
-          <div class="kpi-label">Bottleneck</div>
+        <div class="kpi-card" id="kpi-ref" data-status="neutral">
+          <div class="kpi-label">Ref TPS</div>
           <div class="kpi-value">&mdash;</div>
           <div class="kpi-detail">awaiting analysis</div>
         </div>
