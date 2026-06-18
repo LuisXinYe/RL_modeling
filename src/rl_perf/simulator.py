@@ -28,6 +28,11 @@ class SimResult:
     weight_bytes: float  # deduplicated weight total
     peak_activation_bytes: float  # peak live activation memory
     total_comm_bytes: float  # total communication volume
+    compute_time: float = 0
+    tp_comm_time: float = 0
+    ep_comm_time: float = 0
+    dp_comm_time: float = 0
+    cp_comm_time: float = 0
 
 
 def simulate(ops: List[SimOp]) -> SimResult:
@@ -48,7 +53,7 @@ def simulate(ops: List[SimOp]) -> SimResult:
         and total communication bytes.
     """
     if not ops:
-        return SimResult(0.0, 0.0, 0.0, 0.0)
+        return SimResult(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     n = len(ops)
 
@@ -83,6 +88,8 @@ def simulate(ops: List[SimOp]) -> SimResult:
     # 3. Multi-clock simulation
     # -----------------------------------------------------------------------
     stream_clock: Dict[str, float] = defaultdict(float)
+    # 新增：用于统计各流纯执行耗时之和
+    stream_durations: Dict[str, float] = defaultdict(float)
     finish_time = [0.0] * n
 
     for idx in topo_order:
@@ -92,7 +99,21 @@ def simulate(ops: List[SimOp]) -> SimResult:
         finish_time[idx] = start + op.duration
         stream_clock[op.stream] = finish_time[idx]
 
+        # 【核心修改】：累加该流下所有 op 的纯执行时间
+        # 即使 compute 包含 100 个 op，这里也会把它们的 duration 全部加在一起
+        stream_durations[op.stream] += op.duration
+
     wall_clock = max(stream_clock.values()) if stream_clock else 0.0
+
+    # 提取具体的计算和通信时间
+    # 注意：这里的 compute_time 指的是算子在 AI Core 上的总有效执行时间
+    compute_time = stream_durations.get("compute", 0.0)
+
+    # 汇总各类通信流的时间
+    tp_comm_time = stream_durations.get("tp_comm", 0.0)
+    ep_comm_time = stream_durations.get("ep_comm", 0.0)
+    dp_comm_time = stream_durations.get("dp_comm", 0.0)
+    cp_comm_time = stream_durations.get("cp_comm", 0.0)
 
     # -----------------------------------------------------------------------
     # 4. Weight bytes (sum all — builder only sets weight_bytes on fwd ops)
@@ -144,13 +165,18 @@ def simulate(ops: List[SimOp]) -> SimResult:
                     freed[dep] = True
 
     # -----------------------------------------------------------------------
-    # 6. Communication bytes (MVP: return 0; no comm_bytes field on SimOp)
+    # 6. Communication bytes
     # -----------------------------------------------------------------------
-    total_comm = 0.0
+    total_comm = sum(op.comm_bytes for op in ops)
 
     return SimResult(
         wall_clock_time=wall_clock,
         weight_bytes=total_weight,
         peak_activation_bytes=peak_activation,
         total_comm_bytes=total_comm,
+        compute_time=compute_time,
+        tp_comm_time=tp_comm_time,
+        ep_comm_time=ep_comm_time,
+        dp_comm_time=dp_comm_time,
+        cp_comm_time=cp_comm_time
     )
