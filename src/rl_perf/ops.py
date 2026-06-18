@@ -66,7 +66,7 @@ def comm_time(
 
     bw = hw.intra_node_bw_gb_s if is_intra_node else hw.inter_node_bw_gb_s
     bw_bytes = bw * 1e9 * hw.calibration.comm_efficiency
-    lat = 0.0 if is_intra_node else hw.inter_node_latency_us * 1e-6
+    lat = hw.intra_node_latency_us * 1e-6 if is_intra_node else hw.inter_node_latency_us * 1e-6
 
     N = group_size
     if N <= 1:
@@ -568,6 +568,40 @@ def op_reducescatter(msg_bytes: float, group_size: int) -> OpCost:
     return OpCost(comm_bytes=comm_b)
 
 
+def op_alltoall_dispatch(
+    tokens: int,
+    hidden_size: int,
+    top_k: int,
+    ep_size: int,
+    dtype_bytes: int = 2,
+) -> OpCost:
+    """AllToAll dispatch: send tokens to their target expert EP ranks.
+
+    Each token is routed to top_k experts; the dispatch AllToAll redistributes
+    tokens so that each EP rank receives the tokens destined for its local experts.
+    comm_bytes = tokens * top_k * hidden * dtype_bytes.
+    """
+    comm_b = tokens * top_k * hidden_size * dtype_bytes
+    return OpCost(comm_bytes=comm_b)
+
+
+def op_alltoall_combine(
+    tokens: int,
+    hidden_size: int,
+    top_k: int,
+    ep_size: int,
+    dtype_bytes: int = 2,
+) -> OpCost:
+    """AllToAll combine: gather expert outputs back to original EP ranks.
+
+    After local expert computation, the combine AllToAll sends each token's
+    expert output back to the EP rank that originally owned the token.
+    comm_bytes = tokens * top_k * hidden * dtype_bytes.
+    """
+    comm_b = tokens * top_k * hidden_size * dtype_bytes
+    return OpCost(comm_bytes=comm_b)
+
+
 def op_alltoall(
     tokens: int,
     hidden_size: int,
@@ -575,7 +609,11 @@ def op_alltoall(
     ep_size: int,
     dtype_bytes: int = 2,
 ) -> OpCost:
-    """AllToAll for MoE expert dispatch + combine. comm_bytes = 2*tokens*top_k*hidden*bytes."""
+    """AllToAll for MoE expert dispatch + combine (combined cost).
+
+    DEPRECATED: Use op_alltoall_dispatch + op_alltoall_combine instead.
+    Kept for backward compatibility. comm_bytes = 2*tokens*top_k*hidden*bytes.
+    """
     comm_b = 2 * tokens * top_k * hidden_size * dtype_bytes
     return OpCost(comm_bytes=comm_b)
 
