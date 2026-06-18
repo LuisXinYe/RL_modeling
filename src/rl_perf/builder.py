@@ -1062,7 +1062,7 @@ def build_generation_step(
     if stage_layers is None:
         stage_layers = _split_stages(all_layers, pp)[0]
 
-    batch = rl_cfg.gen_batch_size
+    batch = rl_cfg.train_batch_size / parallel_cfg.dp / parallel_cfg.ep
     prompt_len = rl_cfg.avg_prompt_len
     kv_len = rl_cfg.avg_prompt_len + rl_cfg.avg_response_len
 
