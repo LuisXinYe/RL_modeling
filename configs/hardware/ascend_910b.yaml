@@ -12,11 +12,6 @@ peak_tflops_bf16: 300
 hbm_capacity_gb: 64
 hbm_bandwidth_tb_s: 1.2
 hbm_usable_ratio: 0.85
-intra_node_bw_gb_s: 392
-intra_node_latency_us: 2
-inter_node_bw_gb_s: 100
-inter_node_latency_us: 15
-devices_per_node: 8
 cpu_gpu_bw_gb_s: 32
 calibration:
   # Based on实测 MFU ~10%, lowered from theoretical 0.45

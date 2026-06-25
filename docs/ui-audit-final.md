@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-30
 **Auditor:** Claude (automated)
-**Scope:** `src/rl_perf/ui/` -- all 10 GUI source files
+**Scope:** `src/llm_perf/ui/` -- all 10 GUI source files
 **Baseline score:** 5 / 20 (see `ui-audit-baseline.md`)
 
 ---

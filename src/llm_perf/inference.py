@@ -1,0 +1,85 @@
+"""Inference / generation time modeling.
+
+Provides generation_time() for prefill + decode performance estimation,
+and effective_response_len() for batch-aware response length calculation.
+These can be used directly for inference performance modeling without
+depending on RL orchestration logic (ref_time, step_time, reshard).
+"""
+
+import math
+
+from llm_perf import ops
+from llm_perf.builder import (
+    build_generation_step,
+)
+from llm_perf.config import Phase
+from llm_perf.simulator import simulate
+
+
+def effective_response_len(
+    avg: int, std: int = None, batch_size: int = 1, max_len: int = None
+) -> float:
+    """Gumbel approximation for expected max of batch_size samples.
+    E[max of B samples] ≈ avg + std * sqrt(2 * ln(B))
+    Falls back to max_len if std not provided."""
+    if std is not None and std > 0 and batch_size > 1:
+        return avg + std * math.sqrt(2 * math.log(batch_size))
+    if max_len is not None:
+        return max_len
+    return avg
+
+
+def generation_time(model_cfg, hw, parallel_cfg, rl_cfg):
+    """Total generation time in seconds. Returns (prefill_sim, t_step).
+
+    GRPO group-aware generation:
+      group_size=16 means each prompt is sampled 16 times.
+      A gen_batch of 64 samples covers 64/16=4 distinct prompts.
+      Prefill is paid once per prompt (4 times), not per response (64 times).
+      Decode is paid per response (64 times × eff_len tokens).
+
+    For multi-stage PP, the slowest stage determines the pipeline time.
+    We simulate all stages and use the maximum prefill/decode times.
+    """
+
+    prefill_ops, decode_ops = build_generation_step(model_cfg, hw, parallel_cfg, rl_cfg)
+    prefill_sim = simulate(prefill_ops)
+    t_prefill = prefill_sim.wall_clock_time
+    t_decode_per_token = simulate(decode_ops).wall_clock_time
+
+    eff_len = effective_response_len(
+        avg=rl_cfg.avg_response_len,
+        std=rl_cfg.std_response_len,
+        batch_size=rl_cfg.gen_batch_size,
+        max_len=rl_cfg.max_response_len,
+    )
+
+    t_step = t_prefill + eff_len * t_decode_per_token
+
+    # Speculative decoding throughput multiplier (spec §4.3)
+    if rl_cfg.use_speculative_decoding:
+        mtp_depth = (model_cfg.auxiliary or {}).get("mtp_depth", 0)
+        if mtp_depth > 0:
+            acceptance_len = rl_cfg.mtp_acceptance_len or mtp_depth
+            draft_cost = ops.op_mtp_head(
+                model_cfg.hidden_size,
+                model_cfg.vocab_size,
+                mtp_depth,
+                batch_tokens=rl_cfg.gen_batch_size,
+                phase=Phase.DECODE,
+                dtype_bytes=model_cfg.dtype_bytes,
+            )
+            draft_overhead = (
+                ops.roofline_time(draft_cost, hw) / t_decode_per_token
+                if t_decode_per_token > 0
+                else 0
+            )
+            throughput_multiplier = acceptance_len / (1 + draft_overhead)
+            if throughput_multiplier > 0:
+                t_step = (
+                    t_prefill
+                    + (eff_len / throughput_multiplier)
+                    * t_decode_per_token
+                )
+
+    return prefill_sim, t_step

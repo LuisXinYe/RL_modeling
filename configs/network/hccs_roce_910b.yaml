@@ -1,0 +1,14 @@
+name: "HCCS+RoCE (910B)"
+description: "Ascend 910B cluster — HCCS intra-node, RoCE v2 inter-node"
+devices_per_node: 8
+tiers:
+  - name: intra_node
+    type: fullmesh
+    size: 8
+    bandwidth_gb_s: 392
+    latency_us: 2
+  - name: inter_node
+    type: fattree
+    size: 9999999999
+    bandwidth_gb_s: 100
+    latency_us: 15

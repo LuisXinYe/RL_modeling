@@ -1,4 +1,4 @@
-# rl-perf UI Rebuild Implementation Plan
+# llm-perf UI Rebuild Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -16,7 +16,7 @@
 ## File Structure
 
 ```
-src/rl_perf/ui/
+src/llm_perf/ui/
 ├── __init__.py          # (keep, empty)
 ├── api.py               # NEW: FastAPI app, REST endpoints, static serving
 ├── hf_import.py         # KEEP: HuggingFace import logic (used by api.py)
@@ -35,14 +35,14 @@ src/rl_perf/ui/
 ### Task 1: Delete old Gradio UI and update dependencies
 
 **Files:**
-- Delete: `src/rl_perf/ui/app.py`, `src/rl_perf/ui/tab_model.py`, `src/rl_perf/ui/tab_hardware.py`, `src/rl_perf/ui/tab_rl.py`, `src/rl_perf/ui/tab_search.py`, `src/rl_perf/ui/results.py`, `src/rl_perf/ui/plots.py`, `src/rl_perf/ui/topology.py`, `src/rl_perf/ui/_theme.py`
+- Delete: `src/llm_perf/ui/app.py`, `src/llm_perf/ui/tab_model.py`, `src/llm_perf/ui/tab_hardware.py`, `src/llm_perf/ui/tab_rl.py`, `src/llm_perf/ui/tab_search.py`, `src/llm_perf/ui/results.py`, `src/llm_perf/ui/plots.py`, `src/llm_perf/ui/topology.py`, `src/llm_perf/ui/_theme.py`
 - Modify: `pyproject.toml`
 
 - [ ] **Step 1: Delete all Gradio UI files**
 
 ```bash
 cd /Users/horacehxw/Projects/RL_modeling/.worktrees/ui_optimize
-git rm src/rl_perf/ui/app.py src/rl_perf/ui/tab_model.py src/rl_perf/ui/tab_hardware.py src/rl_perf/ui/tab_rl.py src/rl_perf/ui/tab_search.py src/rl_perf/ui/results.py src/rl_perf/ui/plots.py src/rl_perf/ui/topology.py src/rl_perf/ui/_theme.py
+git rm src/llm_perf/ui/app.py src/llm_perf/ui/tab_model.py src/llm_perf/ui/tab_hardware.py src/llm_perf/ui/tab_rl.py src/llm_perf/ui/tab_search.py src/llm_perf/ui/results.py src/llm_perf/ui/plots.py src/llm_perf/ui/topology.py src/llm_perf/ui/_theme.py
 ```
 
 Keep `hf_import.py` and `__init__.py`.
@@ -84,15 +84,15 @@ git commit -m "chore: remove Gradio UI, switch to FastAPI + uvicorn deps"
 ### Task 2: Create FastAPI backend (api.py)
 
 **Files:**
-- Create: `src/rl_perf/ui/api.py`
-- Modify: `src/rl_perf/cli.py`
+- Create: `src/llm_perf/ui/api.py`
+- Modify: `src/llm_perf/cli.py`
 
 - [ ] **Step 1: Create api.py with FastAPI app and all endpoints**
 
-Create `src/rl_perf/ui/api.py`:
+Create `src/llm_perf/ui/api.py`:
 
 ```python
-"""FastAPI backend for rl-perf web GUI.
+"""FastAPI backend for llm-perf web GUI.
 
 Serves static files (index.html, styles.css, app.js) and provides REST
 endpoints for model prediction, search, and configuration loading.
@@ -108,18 +108,18 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from rl_perf.config import (
+from llm_perf.config import (
     HardwareConfig,
     LayerConfig,
     ModelConfig,
     ParallelismConfig,
-    RLConfig,
+    WorkloadConfig,
     load_hardware_config,
     load_model_config,
 )
-from rl_perf.model import RLPerformanceModel
-from rl_perf.search import pareto_search, sensitivity_sweep
-from rl_perf.ui.hf_import import fetch_hf_config, hf_config_to_model_config
+from llm_perf.model import LLMPerformanceModel
+from llm_perf.search import pareto_search, sensitivity_sweep
+from llm_perf.ui.hf_import import fetch_hf_config, hf_config_to_model_config
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _CONFIGS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "configs"
@@ -137,7 +137,7 @@ _HW_TEMPLATES = {
     "CloudMatrix 384": "cloudmatrix_384",
 }
 
-app = FastAPI(title="rl-perf", docs_url=None, redoc_url=None)
+app = FastAPI(title="llm-perf", docs_url=None, redoc_url=None)
 
 
 # ── Pydantic models for request/response ──────────────────────────
@@ -188,7 +188,7 @@ class ParallelismInput(BaseModel):
     activation_offload: bool = False
 
 
-class RLInput(BaseModel):
+class WorkloadInput(BaseModel):
     total_prompts: int = 10000
     group_size: int = 8
     avg_prompt_len: int = 512
@@ -210,7 +210,7 @@ class PredictRequest(BaseModel):
     hardware: str = "Ascend 910C"
     total_devices: int = 8
     parallelism: ParallelismInput = ParallelismInput()
-    rl: RLInput = RLInput()
+    rl: WorkloadInput = WorkloadInput()
 
 
 class SearchConfig(BaseModel):
@@ -226,7 +226,7 @@ class SearchRequest(BaseModel):
     hardware: str = "Ascend 910C"
     total_devices: int = 8
     parallelism: ParallelismInput = ParallelismInput()
-    rl: RLInput = RLInput()
+    rl: WorkloadInput = WorkloadInput()
     search: SearchConfig = SearchConfig()
 
 
@@ -286,10 +286,10 @@ def _build_parallelism(p: ParallelismInput) -> ParallelismConfig:
     )
 
 
-def _build_rl_config(r: RLInput) -> RLConfig:
+def _build_rl_config(r: WorkloadInput) -> WorkloadConfig:
     std = r.std_response_len if r.std_response_len and r.std_response_len > 0 else None
     mtp = r.mtp_acceptance_len if r.use_speculative_decoding else None
-    return RLConfig(
+    return WorkloadConfig(
         total_prompts=r.total_prompts,
         group_size=r.group_size,
         avg_prompt_len=r.avg_prompt_len,
@@ -399,7 +399,7 @@ def predict(req: PredictRequest):
         gen_dp = req.total_devices // req.parallelism.tp if req.parallelism.tp > 0 else 1
         gen_par = ParallelismConfig(tp=req.parallelism.tp, pp=1, dp=gen_dp)
 
-        perf = RLPerformanceModel(model_cfg, hw_cfg)
+        perf = LLMPerformanceModel(model_cfg, hw_cfg)
         report = perf.derive_targets(req.total_devices, rl_cfg, gen_par, train_par)
         mem = report.memory
 
@@ -450,7 +450,7 @@ def search(req: SearchRequest):
         model_cfg = _build_model_config(req.model)
         hw_cfg = _build_hw_config(req.hardware)
         rl_cfg = _build_rl_config(req.rl)
-        perf = RLPerformanceModel(model_cfg, hw_cfg)
+        perf = LLMPerformanceModel(model_cfg, hw_cfg)
 
         if req.search.mode == "pareto":
             sr = pareto_search(perf, hw_cfg, rl_cfg, req.search.device_counts)
@@ -556,7 +556,7 @@ def launch(host: str = "127.0.0.1", port: int = 7860):
 
 - [ ] **Step 2: Update cli.py to use FastAPI launcher**
 
-In `src/rl_perf/cli.py`, change the `ui` command:
+In `src/llm_perf/cli.py`, change the `ui` command:
 
 ```python
 @app.command()
@@ -565,7 +565,7 @@ def ui(
     port: int = typer.Option(7860, "--port", help="Port number"),
 ):
     """Launch the web GUI."""
-    from rl_perf.ui.api import launch
+    from llm_perf.ui.api import launch
     launch(host=host, port=port)
 ```
 
@@ -574,10 +574,10 @@ Remove the `share` parameter (not applicable to FastAPI).
 - [ ] **Step 3: Create empty static directory with placeholder**
 
 ```bash
-mkdir -p src/rl_perf/ui/static
-echo "<h1>rl-perf</h1><p>UI loading...</p>" > src/rl_perf/ui/static/index.html
-touch src/rl_perf/ui/static/styles.css
-touch src/rl_perf/ui/static/app.js
+mkdir -p src/llm_perf/ui/static
+echo "<h1>llm-perf</h1><p>UI loading...</p>" > src/llm_perf/ui/static/index.html
+touch src/llm_perf/ui/static/styles.css
+touch src/llm_perf/ui/static/app.js
 ```
 
 - [ ] **Step 4: Verify API starts and endpoints respond**
@@ -585,7 +585,7 @@ touch src/rl_perf/ui/static/app.js
 ```bash
 source /Users/horacehxw/Projects/RL_modeling/.venv/bin/activate
 python -c "
-from rl_perf.ui.api import app
+from llm_perf.ui.api import app
 from fastapi.testclient import TestClient
 c = TestClient(app)
 assert c.get('/').status_code == 200
@@ -612,13 +612,13 @@ git commit -m "feat(gui): FastAPI backend with predict, search, hf-import endpoi
 ### Task 3: Create HTML structure (index.html)
 
 **Files:**
-- Create: `src/rl_perf/ui/static/index.html`
+- Create: `src/llm_perf/ui/static/index.html`
 
 - [ ] **Step 1: Write index.html**
 
 Create the complete single-page HTML structure with:
 - `<head>`: Google Fonts `<link>` tag (choose a distinctive sans-serif, NOT Inter/Roboto/Open Sans — e.g., DM Sans, Plus Jakarta Sans, or Outfit), Plotly.js CDN `<script>`, link to styles.css
-- `<header>`: rl-perf branding with subtitle
+- `<header>`: llm-perf branding with subtitle
 - `<main>` with two panels:
   - `<aside id="config-panel">`: 4 accordion sections (Model, Hardware, RL Training, Search) with all form fields per the spec. Each section has a `.accordion-header` (clickable) and `.accordion-body` (collapsible). All inputs have `id` attributes matching the API field names for easy JS binding. Conditional fields (MLA, SWA, MoE, mHC) wrapped in divs with `data-show-when` attributes. Sticky "Run Analysis" button at bottom.
   - `<section id="results-panel">`: Empty state message, KPI cards container (4 divs), tab bar (Timeline, Memory, Topology, Search Results), chart container div.
@@ -633,12 +633,12 @@ The HTML should be a complete, self-contained document. Every form field from th
 ```bash
 source /Users/horacehxw/Projects/RL_modeling/.venv/bin/activate
 python -c "
-from rl_perf.ui.api import app
+from llm_perf.ui.api import app
 from fastapi.testclient import TestClient
 c = TestClient(app)
 r = c.get('/')
 assert r.status_code == 200
-assert 'rl-perf' in r.text
+assert 'llm-perf' in r.text
 assert 'config-panel' in r.text
 assert 'results-panel' in r.text
 print('HTML structure OK')
@@ -648,7 +648,7 @@ print('HTML structure OK')
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/rl_perf/ui/static/index.html
+git add src/llm_perf/ui/static/index.html
 git commit -m "feat(gui): HTML structure with config panel and results layout"
 ```
 
@@ -657,7 +657,7 @@ git commit -m "feat(gui): HTML structure with config panel and results layout"
 ### Task 4: Create CSS design system (styles.css)
 
 **Files:**
-- Create: `src/rl_perf/ui/static/styles.css`
+- Create: `src/llm_perf/ui/static/styles.css`
 
 - [ ] **Step 1: Write styles.css**
 
@@ -686,7 +686,7 @@ Create the complete stylesheet following `.impeccable.md` and the Impeccable `/f
 - [ ] **Step 2: Commit**
 
 ```bash
-git add src/rl_perf/ui/static/styles.css
+git add src/llm_perf/ui/static/styles.css
 git commit -m "feat(gui): CSS design system with tokens, layout, and components"
 ```
 
@@ -695,7 +695,7 @@ git commit -m "feat(gui): CSS design system with tokens, layout, and components"
 ### Task 5: Create JavaScript application logic (app.js)
 
 **Files:**
-- Create: `src/rl_perf/ui/static/app.js`
+- Create: `src/llm_perf/ui/static/app.js`
 
 - [ ] **Step 1: Write app.js**
 
@@ -756,7 +756,7 @@ Create the complete vanilla JS application. Must include:
 ```bash
 source /Users/horacehxw/Projects/RL_modeling/.venv/bin/activate
 python -c "
-from rl_perf.ui.api import app
+from llm_perf.ui.api import app
 from fastapi.testclient import TestClient
 c = TestClient(app)
 # Check static files serve
@@ -774,7 +774,7 @@ print('Full stack OK')
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/rl_perf/ui/static/app.js
+git add src/llm_perf/ui/static/app.js
 git commit -m "feat(gui): JS application — accordion, tabs, fetch API, Plotly charts"
 ```
 
@@ -783,13 +783,13 @@ git commit -m "feat(gui): JS application — accordion, tabs, fetch API, Plotly 
 ### Task 6: Visual polish and Impeccable audit
 
 **Files:**
-- Modify: `src/rl_perf/ui/static/index.html`, `src/rl_perf/ui/static/styles.css`, `src/rl_perf/ui/static/app.js`
+- Modify: `src/llm_perf/ui/static/index.html`, `src/llm_perf/ui/static/styles.css`, `src/llm_perf/ui/static/app.js`
 
 - [ ] **Step 1: Launch the app and visually inspect**
 
 ```bash
 source /Users/horacehxw/Projects/RL_modeling/.venv/bin/activate
-python -c "from rl_perf.ui.api import launch; launch(port=7862)"
+python -c "from llm_perf.ui.api import launch; launch(port=7862)"
 ```
 
 Open http://localhost:7862 in browser. Check:
@@ -850,7 +850,7 @@ Create `tests/test_api.py`:
 
 import pytest
 from fastapi.testclient import TestClient
-from rl_perf.ui.api import app
+from llm_perf.ui.api import app
 
 client = TestClient(app)
 
@@ -859,7 +859,7 @@ def test_index_returns_html():
     r = client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    assert "rl-perf" in r.text
+    assert "llm-perf" in r.text
 
 
 def test_get_models():
@@ -941,7 +941,7 @@ Expected: All tests pass.
 - [ ] **Step 3: Run linter**
 
 ```bash
-ruff check src/rl_perf/ui/ && ruff format --check src/rl_perf/ui/
+ruff check src/llm_perf/ui/ && ruff format --check src/llm_perf/ui/
 ```
 
 - [ ] **Step 4: Commit**

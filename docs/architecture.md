@@ -1,8 +1,8 @@
-# rl-perf Architecture
+# llm-perf Architecture
 
 ## Overview
 
-rl-perf predicts RL training epoch time through a three-layer architecture.
+llm-perf predicts RL training epoch time through a three-layer architecture.
 Each layer builds on the one below it:
 
 ```
@@ -26,7 +26,7 @@ and RL parameters. `builder.py` calls `ops.py` to cost each operator, wraps
 results into `SimOp` nodes with stream and dependency info, and hands the DAG
 to `simulator.py`. `pipeline.py` orchestrates generation and training phases,
 calling builder+simulator for each, then combines them into an epoch time.
-`model.py:RLPerformanceModel` is the top-level API that drives everything and
+`model.py:LLMPerformanceModel` is the top-level API that drives everything and
 produces a `TargetReport`.
 
 

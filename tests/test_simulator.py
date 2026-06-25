@@ -1,6 +1,6 @@
 import pytest
-from rl_perf.simulator import simulate, SimResult
-from rl_perf.builder import SimOp
+from llm_perf.simulator import simulate, SimResult
+from llm_perf.builder import SimOp
 
 
 def test_empty_ops():

@@ -1,4 +1,4 @@
-# rl-perf: RL Training Performance Modeling
+# llm-perf: LLM Performance Modeling
 
 Given model + hardware + RL config, predict epoch time and derive TPS targets for inference and training teams.
 
@@ -40,7 +40,7 @@ pip install -e ".[dev]"
 
 ```bash
 # Derive TPS targets: Llama 8B on 64x Ascend 910C, 10K prompts, 24h budget
-rl-perf targets \
+llm-perf targets \
   --model configs/models/llama3_1_8b.yaml \
   --hardware 910C \
   --devices 64 \
@@ -49,7 +49,7 @@ rl-perf targets \
   --time-budget 24
 
 # Feasibility check for a larger model
-rl-perf check \
+llm-perf check \
   --model configs/models/qwen2_5_72b.yaml \
   --hardware 910C \
   --devices 128 \
@@ -60,14 +60,14 @@ rl-perf check \
 ## Python API
 
 ```python
-from rl_perf.config import load_model_config, load_hardware_config, RLConfig, ParallelismConfig
-from rl_perf.model import RLPerformanceModel
+from llm_perf.config import load_model_config, load_hardware_config, WorkloadConfig, ParallelismConfig
+from llm_perf.model import LLMPerformanceModel
 
 model = load_model_config("configs/models/llama3_1_8b.yaml")
 hw = load_hardware_config("configs/hardware/ascend_910c.yaml")
-perf = RLPerformanceModel(model, hw)
+perf = LLMPerformanceModel(model, hw)
 
-rl_cfg = RLConfig(total_prompts=10000, group_size=8)
+rl_cfg = WorkloadConfig(total_prompts=10000, group_size=8)
 gen_p = ParallelismConfig(tp=8, dp=8)
 train_p = ParallelismConfig(tp=8, dp=8)
 

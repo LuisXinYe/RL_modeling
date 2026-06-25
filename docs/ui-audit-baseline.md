@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-30
 **Auditor:** Claude (automated)
-**Scope:** `src/rl_perf/ui/` -- all 10 GUI source files
+**Scope:** `src/llm_perf/ui/` -- all 10 GUI source files
 **Design context:** `.impeccable.md` (Huawei professional dashboard, warm-neutral, data-first)
 
 ---
@@ -76,7 +76,7 @@
 | P0 | **No design token system** -- colors are hardcoded strings in `plots.py` and `topology.py`. No CSS custom properties, no shared constants for UI chrome | `plots.py:20-28`, `topology.py:21-38` | Create `_tokens.py` or CSS variables for all design tokens |
 | P1 | **KPI cards have no visual styling** -- rendered as plain Markdown (`### Epoch Time\n\n**value**`). No background, no border, no padding, no visual hierarchy | `app.py:373-393`, `results.py:23-33` | Implement as styled `gr.HTML` with background cards, large number typography |
 | P1 | **No dark mode consideration** -- `.impeccable.md` says "Light mode" but no explicit light theme enforcement. Gradio may follow OS preference | `app.py:138` | Explicitly set light mode; add `@media (prefers-color-scheme: dark)` override if needed |
-| P1 | **Title is plain Markdown** -- `gr.Markdown("# rl-perf\nRL Training Performance Modeling")` with no brand styling, no logo, no visual weight | `app.py:141` | Style header with brand color, proper typography, possibly a small logo |
+| P1 | **Title is plain Markdown** -- `gr.Markdown("# llm-perf\nLLM Performance Modeling")` with no brand styling, no logo, no visual weight | `app.py:141` | Style header with brand color, proper typography, possibly a small logo |
 | P2 | **Plotly chart backgrounds are pure white** -- `.impeccable.md` specifies "warm neutral backgrounds (not pure white)" | `plots.py` (all figures) | Set `plot_bgcolor` and `paper_bgcolor` to warm off-white (e.g., `#faf8f5`) |
 | P2 | **No consistent spacing rhythm** -- `gr.Group()` and `gr.Row()` use Gradio defaults with no `elem_classes` for custom spacing | All tab files | Define spacing scale in CSS (4px, 8px, 16px, 24px, 32px) |
 

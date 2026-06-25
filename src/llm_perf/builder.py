@@ -10,15 +10,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from rl_perf import ops
-from rl_perf.config import (
+from llm_perf import ops
+from llm_perf.config import (
     HardwareConfig,
     LayerConfig,
     ModelConfig,
     ParallelismConfig,
     Phase,
-    RLConfig,
-    VisionEncoderConfig,
+    WorkloadConfig,
 )
 
 
@@ -72,6 +71,11 @@ def _validate_parallelism(
             raise ValueError(
                 f"Layer {i}: intermediate_size={layer.intermediate_size} not divisible by tp={tp}. "
                 f"Choose tp that evenly divides intermediate_size."
+            )
+        if layer.attention == "DSA" and layer.compress_ratio == 4 and layer.index_n_heads % tp != 0:
+            raise ValueError(
+                f"Layer {i}: index_n_heads={layer.index_n_heads} not divisible by tp={tp}. "
+                f"Choose tp that evenly divides index_n_heads for DSA C4A layers."
             )
 
 
@@ -202,12 +206,14 @@ def build_layer_ops(
     # ---- SP AllGather (before CP ring / attention) ----------------------------
     # SP AllGather restores sequence from sp_seq_len to local_seq_len (CP-local).
     # Must happen BEFORE CP ring, because CP ring operates on full CP-local sequence.
+    # Comm volume is sized by the GATHERED (full) sequence, so this AllGather
+    # matches the ReduceScatter below — together they equal one AllReduce.
     if sp and tp > 1:
         ag_attn = _build_tp_comm(
             name="tp_allgather_attn",
             collective="allgather",
             batch=batch,
-            seq_len=sp_seq_len,
+            seq_len=local_seq_len,
             hidden_size=d,
             dtype_bytes=dtype_bytes,
             tp=tp,
@@ -222,6 +228,8 @@ def build_layer_ops(
         attn_type = layer_cfg.attention
         if attn_type == "MLA":
             kv_dim = layer_cfg.kv_compression_dim + layer_cfg.rope_dim
+        elif attn_type == "DSA":
+            kv_dim = layer_cfg.compress_c_kv
         elif attn_type in ("GQA", "MHA", "SWA"):
             tp_kv_heads = layer_cfg.num_kv_heads // tp
             kv_dim = tp_kv_heads * layer_cfg.head_dim
@@ -293,19 +301,74 @@ def build_layer_ops(
             kv_len=kv_len,
             dtype_bytes=dtype_bytes,
         )
+    elif attn_type == "DSA":
+        tp_num_heads = layer_cfg.num_heads // tp
+        tp_index_heads = layer_cfg.index_n_heads // tp if layer_cfg.index_n_heads > 0 else 0
+        attn_cost = ops.op_dsa_attention(
+            hidden_size=d,
+            num_heads=tp_num_heads,
+            head_dim=layer_cfg.head_dim,
+            q_lora_rank=layer_cfg.q_lora_rank,
+            o_lora_rank=layer_cfg.o_lora_rank,
+            o_groups=layer_cfg.o_groups,
+            compress_ratio=layer_cfg.compress_ratio,
+            compress_c_kv=layer_cfg.compress_c_kv,
+            compress_coeff=layer_cfg.compress_coeff,
+            index_n_heads=tp_index_heads,
+            index_head_dim=layer_cfg.index_head_dim,
+            index_topk=layer_cfg.index_topk,
+            window_size=layer_cfg.window_size,
+            batch=batch,
+            seq_len=local_seq_len,
+            phase=phase,
+            kv_len=kv_len,
+            dtype_bytes=dtype_bytes,
+        )
     else:
         raise ValueError(f"Unknown attention type: {attn_type}")
 
     attn_dep_idx = _idx(len(result) - 1)  # depends on CP ring / SP AG / norm1
+    attn_is_large_gemm = attn_type != "DSA"  # DSA uses small_gemm for mixed cube+vec ops
     attn_op = SimOp(
         name=f"attention_{attn_type.lower()}",
         stream="compute",
-        duration=ops.roofline_time(attn_cost, hw, is_large_gemm=True),
+        duration=ops.roofline_time(attn_cost, hw, is_large_gemm=attn_is_large_gemm),
         depends_on=[attn_dep_idx],
         weight_bytes=attn_cost.weight_bytes,
         output_bytes=attn_cost.output_bytes,
     )
     result.append(attn_op)
+
+    # ---- 1b. Lightning Index AllReduce (DSA C4A only, when TP > 1) ----------
+    if attn_type == "DSA" and layer_cfg.compress_ratio == 4 and tp > 1:
+        index_allreduce_cost = ops.op_dsa_index_score_allreduce(
+            batch=batch,
+            seq_len=local_seq_len,
+            compress_ratio=layer_cfg.compress_ratio,
+            index_n_heads=layer_cfg.index_n_heads,
+            index_head_dim=layer_cfg.index_head_dim,
+            phase=phase,
+            kv_len=kv_len,
+            dtype_bytes=dtype_bytes,
+        )
+        if index_allreduce_cost.comm_bytes > 0:
+            index_allreduce_duration = ops.comm_time(
+                index_allreduce_cost,
+                hw,
+                group_size=tp,
+                is_intra_node=_is_intra_node(tp, hw),
+                algorithm="ring",
+            )
+            index_allreduce_op = SimOp(
+                name="tp_allreduce_index_score",
+                stream="tp_comm",
+                duration=index_allreduce_duration,
+                depends_on=[_idx(len(result) - 1)],
+                weight_bytes=0,
+                output_bytes=0,
+                comm_bytes=index_allreduce_cost.comm_bytes,
+            )
+            result.append(index_allreduce_op)
 
     # ---- 2. TP comm (attention) ---------------------------------------------
     if tp > 1:
@@ -326,7 +389,29 @@ def build_layer_ops(
         result.append(tp_attn_comm)
     last_compute_idx = _idx(len(result) - 1)
 
-    # ---- 3. Pre-FFN RMSNorm -------------------------------------------------
+    # ---- 3. mHC post-attn + pre-MoE (deep-fused, optional) ------------------
+    # Placed after attention TP comm, before pre-FFN RMSNorm.
+    # This deep-fused kernel eliminates x_{l+0.5} from HBM.
+    if layer_cfg.residual == "mHC":
+        mhc_mid_cost = ops.op_mhc_post_pre_fused(
+            hidden_size=d,
+            expansion=layer_cfg.mhc_expansion,
+            batch_tokens=sp_batch_tokens,
+            phase=phase,
+            dtype_bytes=dtype_bytes,
+        )
+        mhc_mid_op = SimOp(
+            name="mhc_post_attn_pre_moe",
+            stream="compute",
+            duration=ops.roofline_time(mhc_mid_cost, hw, is_large_gemm=False),
+            depends_on=[last_compute_idx],
+            weight_bytes=mhc_mid_cost.weight_bytes,
+            output_bytes=mhc_mid_cost.output_bytes,
+        )
+        result.append(mhc_mid_op)
+        last_compute_idx = _idx(len(result) - 1)
+
+    # ---- 4. Pre-FFN RMSNorm -------------------------------------------------
     # After TP ReduceScatter (SP), data is back to SP-sharded state.
     # So RMSNorm runs on SP-sharded data.
     norm2_cost = ops.op_rmsnorm(d, sp_batch_tokens, phase, dtype_bytes)
@@ -342,13 +427,14 @@ def build_layer_ops(
     last_compute_local = len(result) - 1
 
     # ---- 4. FFN -------------------------------------------------------------
-    # SP: insert AllGather before FFN to restore from sp_seq_len to local_seq_len
+    # SP: insert AllGather before FFN to restore from sp_seq_len to local_seq_len.
+    # Comm volume is sized by the GATHERED (full) sequence (matches ReduceScatter).
     if sp and tp > 1:
         ag_ffn = _build_tp_comm(
             name="tp_allgather_ffn",
             collective="allgather",
             batch=batch,
-            seq_len=sp_seq_len,
+            seq_len=local_seq_len,
             hidden_size=d,
             dtype_bytes=dtype_bytes,
             tp=tp,
@@ -478,25 +564,53 @@ def build_layer_ops(
         result.append(tp_ffn_comm)
         last_compute_local = len(result) - 1
 
-    # ---- 6. mHC residual (optional) -----------------------------------------
-    # After FFN TP ReduceScatter (SP), data is back to SP-sharded state.
+    # ---- 6. mHC pre-attn + post-moe (optional) -------------------------------
+    # mHC (manifold Hyper Connection) replaces standard residual connections.
+    # With fused kernels, each layer has 3 mHC ops:
+    #   a) mhc_pre_attn: BEFORE norm1 (inserted at start of layer)
+    #   b) mhc_post_attn_pre_moe: after attn TP comm, before norm2 (already inserted above)
+    #   c) mhc_post_moe: after FFN TP ReduceScatter (inserted here)
+    # Ref: arXiv:2512.24880
     if layer_cfg.residual == "mHC":
-        mhc_cost = ops.op_mhc_residual(
+        # 6a. mHC pre-attention: placed BEFORE norm1
+        # In the V4 reference, mhc_pre comes before RMSNorm.
+        # We insert it at the beginning by shifting norm1's dependency.
+        mhc_pre_cost = ops.op_mhc_pre_fused(
             hidden_size=d,
             expansion=layer_cfg.mhc_expansion,
             batch_tokens=sp_batch_tokens,
             phase=phase,
             dtype_bytes=dtype_bytes,
         )
-        mhc_op = SimOp(
-            name="mhc_residual",
+        mhc_pre_op = SimOp(
+            name="mhc_pre_attn",
             stream="compute",
-            duration=ops.roofline_time(mhc_cost, hw, is_large_gemm=False),
-            depends_on=[_idx(last_compute_local)],
-            weight_bytes=mhc_cost.weight_bytes,
-            output_bytes=mhc_cost.output_bytes,
+            duration=ops.roofline_time(mhc_pre_cost, hw, is_large_gemm=False),
+            depends_on=[],  # first op; caller chains layers together
+            weight_bytes=mhc_pre_cost.weight_bytes,
+            output_bytes=mhc_pre_cost.output_bytes,
         )
-        result.append(mhc_op)
+        # Insert mhc_pre before norm1, and make norm1 depend on it
+        result.insert(0, mhc_pre_op)
+        result[1].depends_on = [_idx(0)]  # norm1 now depends on mhc_pre
+
+        # 6c. mHC post-MoE: after FFN TP ReduceScatter
+        mhc_post_cost = ops.op_mhc_post_fused(
+            hidden_size=d,
+            expansion=layer_cfg.mhc_expansion,
+            batch_tokens=sp_batch_tokens,
+            phase=phase,
+            dtype_bytes=dtype_bytes,
+        )
+        mhc_post_op = SimOp(
+            name="mhc_post_moe",
+            stream="compute",
+            duration=ops.roofline_time(mhc_post_cost, hw, is_large_gemm=False),
+            depends_on=[_idx(last_compute_local)],
+            weight_bytes=mhc_post_cost.weight_bytes,
+            output_bytes=mhc_post_cost.output_bytes,
+        )
+        result.append(mhc_post_op)
 
     # Zero out weight_bytes for BWD ops to avoid double-counting in simulator
     if phase == Phase.TRAIN_BWD:
@@ -544,6 +658,15 @@ def _estimate_param_count(
                 + d * d
             ) * dtype_bytes
             param_bytes += w_b
+        elif attn_type == "DSA":
+            tp_num_heads = layer_cfg.num_heads // tp
+            q_params = d * layer_cfg.q_lora_rank + layer_cfg.q_lora_rank * tp_num_heads * layer_cfg.head_dim
+            kv_params = d * layer_cfg.head_dim  # MQA
+            o_params = tp_num_heads * layer_cfg.head_dim * layer_cfg.o_lora_rank + (layer_cfg.o_groups * layer_cfg.o_lora_rank * d) // tp
+            param_bytes += (q_params + kv_params + o_params) * dtype_bytes
+            if layer_cfg.compress_ratio == 4:
+                tp_index_heads = layer_cfg.index_n_heads // tp
+                param_bytes += layer_cfg.q_lora_rank * tp_index_heads * layer_cfg.index_head_dim * dtype_bytes
 
         # FFN
         ffn_type = layer_cfg.ffn
@@ -572,205 +695,14 @@ def _estimate_param_count(
         # RMSNorm (small, 2 per layer)
         param_bytes += 2 * d * dtype_bytes
 
+        # mHC weights (FP32): 4 matrices of [n,n] per layer
+        # H_res_attn, H_res_moe, H_pre (×2), H_post (×2) → 4 * n² FP32 params
+        if layer_cfg.residual == "mHC":
+            n = layer_cfg.mhc_expansion
+            param_bytes += 4 * 3 * n * n * dtype_bytes
+
     return int(param_bytes / dtype_bytes)  # return as element count
 
-
-def _estimate_vision_encoder_params(ve_cfg: VisionEncoderConfig) -> int:
-    """Estimate parameter count for a Vision Transformer encoder.
-
-    Per layer: Q proj + KV proj + output proj + SwiGLU FFN (gate + up + down).
-    """
-    d = ve_cfg.hidden_size
-    d_ff = ve_cfg.intermediate_size
-    n_layers = ve_cfg.num_layers
-    n_heads = ve_cfg.num_heads
-    n_kv = ve_cfg.get_num_kv_heads()
-    head_dim = ve_cfg.get_head_dim()
-
-    q_params = d * (n_heads * head_dim)
-    kv_params = 2 * d * (n_kv * head_dim)
-    out_params = (n_heads * head_dim) * d
-    ffn_params = 3 * d * d_ff  # SwiGLU: gate + up + down
-
-    return n_layers * (q_params + kv_params + out_params + ffn_params)
-
-
-# ---------------------------------------------------------------------------
-# build_vision_encoder_step
-# ---------------------------------------------------------------------------
-
-
-def build_vision_encoder_step(
-    model_cfg: ModelConfig,
-    hw: HardwareConfig,
-    parallel_cfg: ParallelismConfig,
-    batch_size: int,
-) -> List[SimOp]:
-    """Build SimOps for the Vision Encoder (ViT) forward + backward pass.
-
-    The ViT runs before the LLM forward pass: images -> patches -> ViT ->
-    projection -> LLM. It uses MHA (num_kv_heads = num_heads), standard
-    SwiGLU FFN, no MoE.
-
-    The ViT has full recompute (visual_recompute_num_layers = all), so:
-    - Forward pass produces image embeddings
-    - Backward recomputes forward then computes gradients (1.3x penalty applied
-      in pipeline.py via _apply_step_overheads with full_recomputation)
-
-    The sequence length for ViT is the image_seq_len (number of image patches).
-    """
-    ve_cfg = model_cfg.vision_encoder
-    assert ve_cfg is not None
-
-    tp = parallel_cfg.tp
-    dtype_bytes = model_cfg.dtype_bytes
-
-    # Build a synthetic LayerConfig from VisionEncoderConfig
-    ve_layer = LayerConfig(
-        attention="MHA",
-        num_heads=ve_cfg.num_heads,
-        num_kv_heads=ve_cfg.get_num_kv_heads(),
-        head_dim=ve_cfg.get_head_dim(),
-        ffn="SwiGLU",
-        intermediate_size=ve_cfg.intermediate_size,
-    )
-
-    # Build a synthetic ModelConfig with ViT hidden_size for build_layer_ops
-    ve_model_cfg = ModelConfig(
-        name=f"{model_cfg.name}_vit",
-        hidden_size=ve_cfg.hidden_size,
-        vocab_size=1,  # unused for ViT
-        num_layers=ve_cfg.num_layers,
-        dtype=ve_cfg.dtype,
-        default_layer=ve_layer,
-    )
-
-    batch = batch_size
-    seq_len = ve_cfg.image_seq_len()
-
-    all_ops: List[SimOp] = []
-    prev_dep: Optional[int] = None
-
-    # ------ Forward pass -------------------------------------------------------
-    for i in range(ve_cfg.num_layers):
-        offset = len(all_ops)
-        layer_ops = build_layer_ops(
-            layer_cfg=ve_layer,
-            model_cfg=ve_model_cfg,
-            parallel_cfg=parallel_cfg,
-            hw=hw,
-            batch=batch,
-            seq_len=seq_len,
-            phase=Phase.TRAIN_FWD,
-            index_offset=offset,
-        )
-        if prev_dep is not None and layer_ops:
-            layer_ops[0].depends_on = [prev_dep]
-        all_ops.extend(layer_ops)
-        if layer_ops:
-            prev_dep = len(all_ops) - 1
-
-    # ------ Backward pass (reversed layers, with full recompute) ---------------
-    for i in range(ve_cfg.num_layers):
-        offset = len(all_ops)
-        layer_ops = build_layer_ops(
-            layer_cfg=ve_layer,
-            model_cfg=ve_model_cfg,
-            parallel_cfg=parallel_cfg,
-            hw=hw,
-            batch=batch,
-            seq_len=seq_len,
-            phase=Phase.TRAIN_BWD,
-            index_offset=offset,
-        )
-        if prev_dep is not None and layer_ops:
-            layer_ops[0].depends_on = [prev_dep]
-        all_ops.extend(layer_ops)
-        if layer_ops:
-            prev_dep = len(all_ops) - 1
-
-    # Prefix all ops with "vit_"
-    for op in all_ops:
-        op.name = f"vit_{op.name}"
-
-    return all_ops
-
-
-def build_vision_encoder_step_fwd(
-    model_cfg: ModelConfig,
-    hw: HardwareConfig,
-    parallel_cfg: ParallelismConfig,
-    batch_size: int,
-) -> List[SimOp]:
-    """Build SimOps for the Vision Encoder (ViT) forward pass.
-
-    The ViT runs before the LLM forward pass: images -> patches -> ViT ->
-    projection -> LLM. It uses MHA (num_kv_heads = num_heads), standard
-    SwiGLU FFN, no MoE.
-
-    The ViT has full recompute (visual_recompute_num_layers = all), so:
-    - Forward pass produces image embeddings
-    - Backward recomputes forward then computes gradients (1.3x penalty applied
-      in pipeline.py via _apply_step_overheads with full_recomputation)
-
-    The sequence length for ViT is the image_seq_len (number of image patches).
-    """
-    ve_cfg = model_cfg.vision_encoder
-    assert ve_cfg is not None
-
-    tp = parallel_cfg.tp
-    dtype_bytes = model_cfg.dtype_bytes
-
-    # Build a synthetic LayerConfig from VisionEncoderConfig
-    ve_layer = LayerConfig(
-        attention="MHA",
-        num_heads=ve_cfg.num_heads,
-        num_kv_heads=ve_cfg.get_num_kv_heads(),
-        head_dim=ve_cfg.get_head_dim(),
-        ffn="SwiGLU",
-        intermediate_size=ve_cfg.intermediate_size,
-    )
-
-    # Build a synthetic ModelConfig with ViT hidden_size for build_layer_ops
-    ve_model_cfg = ModelConfig(
-        name=f"{model_cfg.name}_vit",
-        hidden_size=ve_cfg.hidden_size,
-        vocab_size=1,  # unused for ViT
-        num_layers=ve_cfg.num_layers,
-        dtype=ve_cfg.dtype,
-        default_layer=ve_layer,
-    )
-
-    batch = batch_size
-    seq_len = ve_cfg.image_seq_len()
-
-    all_ops: List[SimOp] = []
-    prev_dep: Optional[int] = None
-
-    # ------ Forward pass -------------------------------------------------------
-    for i in range(ve_cfg.num_layers):
-        offset = len(all_ops)
-        layer_ops = build_layer_ops(
-            layer_cfg=ve_layer,
-            model_cfg=ve_model_cfg,
-            parallel_cfg=parallel_cfg,
-            hw=hw,
-            batch=batch,
-            seq_len=seq_len,
-            phase=Phase.TRAIN_FWD,
-            index_offset=offset,
-        )
-        if prev_dep is not None and layer_ops:
-            layer_ops[0].depends_on = [prev_dep]
-        all_ops.extend(layer_ops)
-        if layer_ops:
-            prev_dep = len(all_ops) - 1
-
-    # Prefix all ops with "vit_"
-    for op in all_ops:
-        op.name = f"vit_{op.name}"
-
-    return all_ops
 
 # ---------------------------------------------------------------------------
 # build_forward_pass
@@ -781,7 +713,7 @@ def build_forward_pass(
     model_cfg: ModelConfig,
     hw: HardwareConfig,
     parallel_cfg: ParallelismConfig,
-    rl_cfg: RLConfig,
+    rl_cfg: WorkloadConfig,
     include_mtp: bool = True,
     name_prefix: str = "",
     stage_layers: Optional[List[LayerConfig]] = None,
@@ -874,7 +806,7 @@ def build_training_step(
     model_cfg: ModelConfig,
     hw: HardwareConfig,
     parallel_cfg: ParallelismConfig,
-    rl_cfg: RLConfig,
+    rl_cfg: WorkloadConfig,
     stage_layers: Optional[List[LayerConfig]] = None,
 ) -> List[SimOp]:
     """Build SimOps for one full training micro-step (forward + backward + DP sync + optim).
@@ -1044,7 +976,7 @@ def build_generation_step(
     model_cfg: ModelConfig,
     hw: HardwareConfig,
     parallel_cfg: ParallelismConfig,
-    rl_cfg: RLConfig,
+    rl_cfg: WorkloadConfig,
     stage_layers: Optional[List[LayerConfig]] = None,
 ) -> Tuple[List[SimOp], List[SimOp]]:
     """Build SimOps for generation (prefill + decode-per-token).
@@ -1062,7 +994,7 @@ def build_generation_step(
     if stage_layers is None:
         stage_layers = _split_stages(all_layers, pp)[0]
 
-    batch = rl_cfg.train_batch_size / parallel_cfg.dp / parallel_cfg.ep
+    batch = rl_cfg.gen_batch_size / parallel_cfg.dp
     prompt_len = rl_cfg.avg_prompt_len
     kv_len = rl_cfg.avg_prompt_len + rl_cfg.avg_response_len
 

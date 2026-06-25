@@ -1,4 +1,4 @@
-"""Tests for model.py (RLPerformanceModel) and report.py (format_table)."""
+"""Tests for model.py (LLMPerformanceModel) and report.py (format_table)."""
 
 from __future__ import annotations
 
@@ -6,20 +6,18 @@ from pathlib import Path
 
 import pytest
 
-from rl_perf.config import (
+from llm_perf.config import (
     HardwareConfig,
     ModelConfig,
     ParallelismConfig,
-    RLConfig,
+    WorkloadConfig,
     load_hardware_config,
     load_model_config,
 )
-from rl_perf.model import RLPerformanceModel
-from rl_perf.report import TargetReport, format_json, format_table
+from llm_perf.model import LLMPerformanceModel
+from llm_perf.report import TargetReport, format_json, format_table
 
 CONFIGS_DIR = Path(__file__).parent.parent / "configs"
-
-VALID_BOTTLENECKS = {"GENERATION", "TRAINING", "BALANCED"}
 
 
 @pytest.fixture
@@ -38,8 +36,8 @@ def parallel_cfg() -> ParallelismConfig:
 
 
 @pytest.fixture
-def rl_cfg() -> RLConfig:
-    return RLConfig(
+def rl_cfg() -> WorkloadConfig:
+    return WorkloadConfig(
         total_prompts=64,
         group_size=4,
         avg_prompt_len=256,
@@ -52,8 +50,8 @@ def rl_cfg() -> RLConfig:
 
 
 @pytest.fixture
-def perf_model(model_cfg, hw) -> RLPerformanceModel:
-    return RLPerformanceModel(model_cfg, hw)
+def perf_model(model_cfg, hw) -> LLMPerformanceModel:
+    return LLMPerformanceModel(model_cfg, hw)
 
 
 # ---------------------------------------------------------------------------
@@ -67,19 +65,17 @@ def test_derive_targets(perf_model, rl_cfg, parallel_cfg):
         rl_cfg=rl_cfg,
         gen_parallel=parallel_cfg,
         train_parallel=parallel_cfg,
-        time_budget_hours=10.0,
+        ref_parallel=parallel_cfg,
     )
     assert isinstance(report, TargetReport)
-    assert report.epoch_time_hours > 0
+    assert report.step_time_seconds > 0
     assert report.gen_tps_target > 0
     assert report.train_tps_target > 0
-    assert report.bottleneck in VALID_BOTTLENECKS
-    # within_budget is a bool
-    assert isinstance(report.within_budget, bool)
+    assert report.ref_tps_target > 0
 
 
 # ---------------------------------------------------------------------------
-# Test 2: feasibility_check — no time budget, within_budget always True
+# Test 2: feasibility_check — ref_parallel defaults to train_parallel
 # ---------------------------------------------------------------------------
 
 
@@ -91,8 +87,7 @@ def test_feasibility_check(perf_model, rl_cfg, parallel_cfg):
         train_parallel=parallel_cfg,
     )
     assert isinstance(report, TargetReport)
-    assert report.epoch_time_hours > 0
-    assert report.within_budget is True  # no budget provided → always feasible
+    assert report.step_time_seconds > 0
     assert isinstance(report.feasible, bool)
 
 
@@ -102,7 +97,7 @@ def test_feasibility_check(perf_model, rl_cfg, parallel_cfg):
 
 
 def test_what_if_group_size(perf_model, parallel_cfg):
-    rl_small = RLConfig(
+    rl_small = WorkloadConfig(
         total_prompts=64,
         group_size=8,
         avg_prompt_len=256,
@@ -111,7 +106,7 @@ def test_what_if_group_size(perf_model, parallel_cfg):
         train_micro_batch_size=2,
         gen_batch_size=16,
     )
-    rl_large = RLConfig(
+    rl_large = WorkloadConfig(
         total_prompts=64,
         group_size=16,
         avg_prompt_len=256,
@@ -120,11 +115,11 @@ def test_what_if_group_size(perf_model, parallel_cfg):
         train_micro_batch_size=2,
         gen_batch_size=16,
     )
-    report_small = perf_model.derive_targets(64, rl_small, parallel_cfg, parallel_cfg)
-    report_large = perf_model.derive_targets(64, rl_large, parallel_cfg, parallel_cfg)
+    report_small = perf_model.derive_targets(64, rl_small, parallel_cfg, parallel_cfg, parallel_cfg)
+    report_large = perf_model.derive_targets(64, rl_large, parallel_cfg, parallel_cfg, parallel_cfg)
 
-    # group_size=16 → 2x total_responses → should take longer overall
-    assert report_large.epoch_time_hours > report_small.epoch_time_hours
+    # group_size=16 → 2x responses per prompt → longer step time overall
+    assert report_large.step_time_seconds > report_small.step_time_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -165,8 +160,8 @@ def test_format_table(perf_model, rl_cfg, parallel_cfg):
     )
     table = format_table(report)
     assert isinstance(table, str)
-    assert "RL Training Performance Report" in table
-    assert "Bottleneck" in table
+    assert "LLM Performance Report" in table
+    assert "Step time" in table
     assert "Generation" in table
     assert "Training" in table
     assert "Memory" in table
@@ -186,11 +181,11 @@ def test_format_json(perf_model, rl_cfg):
 
     gen_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
     train_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
-    report = perf_model.derive_targets(64, rl_cfg, gen_p, train_p)
+    report = perf_model.derive_targets(64, rl_cfg, gen_p, train_p, train_p)
 
     result = format_json(report)
     parsed = json_mod.loads(result)
-    assert "epoch_time_hours" in parsed
+    assert "step_time_seconds" in parsed
     assert "memory" in parsed
     assert parsed["memory"]["weight_gb"] > 0
 
@@ -204,7 +199,7 @@ def test_memory_from_sim_result(perf_model, rl_cfg):
     """Memory profile should use SimResult weight_bytes."""
     gen_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
     train_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
-    report = perf_model.derive_targets(64, rl_cfg, gen_p, train_p)
+    report = perf_model.derive_targets(64, rl_cfg, gen_p, train_p, train_p)
     assert report.memory.weight_gb > 0
     assert report.memory.activation_peak_gb > 0
 
@@ -217,14 +212,14 @@ def test_memory_from_sim_result(perf_model, rl_cfg):
 def test_what_if(perf_model, rl_cfg):
     gen_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
     train_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
-    base = perf_model.derive_targets(64, rl_cfg, gen_p, train_p)
+    base = perf_model.derive_targets(64, rl_cfg, gen_p, train_p, train_p)
 
     result = perf_model.what_if(
         base_config=rl_cfg.model_dump(),
         overrides={"group_size": 16},
         total_devices=64, gen_parallel=gen_p, train_parallel=train_p,
     )
-    assert result.epoch_time_hours > base.epoch_time_hours
+    assert result.step_time_seconds > base.step_time_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +235,7 @@ def test_sensitivity(perf_model, rl_cfg):
         total_devices=64, gen_parallel=gen_p, train_parallel=train_p,
     )
     assert len(results) == 3
-    assert results[2].epoch_time_hours > results[0].epoch_time_hours
+    assert results[2].step_time_seconds > results[0].step_time_seconds
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +246,7 @@ def test_sensitivity(perf_model, rl_cfg):
 def test_sensitivity_invalid_param(perf_model, rl_cfg):
     gen_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
     train_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
-    with pytest.raises(ValueError, match="Unknown RLConfig field"):
+    with pytest.raises(ValueError, match="Unknown WorkloadConfig field"):
         perf_model.sensitivity(
             rl_cfg=rl_cfg, param_name="nonexistent_field", values=[1, 2],
             total_devices=64, gen_parallel=gen_p, train_parallel=train_p,
@@ -265,12 +260,12 @@ def test_sensitivity_invalid_param(perf_model, rl_cfg):
 
 def test_weight_bytes_no_double_count():
     """Verify builder zeroes weight_bytes on BWD ops so SimResult doesn't double-count."""
-    from rl_perf.builder import build_training_step
-    from rl_perf.simulator import simulate
+    from llm_perf.builder import build_training_step
+    from llm_perf.simulator import simulate
 
     mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
     hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
-    rl = RLConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
+    rl = WorkloadConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
     parallel = ParallelismConfig(tp=1, pp=1, dp=1, ep=1)
 
     ops_list = build_training_step(mc, hw, parallel, rl)
@@ -281,50 +276,70 @@ def test_weight_bytes_no_double_count():
 
 
 # ---------------------------------------------------------------------------
-# Test 12: feasible field — True only when within_budget AND memory OK
+# Test 12: feasible field — tracks memory feasibility
 # ---------------------------------------------------------------------------
 
 
-def test_feasible_field_time_and_memory(perf_model, rl_cfg, parallel_cfg):
-    """feasible should be True only when within_budget AND memory OK."""
+def test_feasible_field_tracks_memory(perf_model, rl_cfg, parallel_cfg):
+    """feasible should be True when all phases fit in memory."""
     report = perf_model.derive_targets(
         total_devices=64, rl_cfg=rl_cfg,
         gen_parallel=parallel_cfg, train_parallel=parallel_cfg,
-        time_budget_hours=100.0,
+        ref_parallel=parallel_cfg,
     )
     assert hasattr(report, 'feasible')
     assert isinstance(report.feasible, bool)
-    if report.memory.train_feasible and report.memory.gen_feasible:
-        assert report.feasible is True
-
-
-# ---------------------------------------------------------------------------
-# Test 13: feasible False when over time
-# ---------------------------------------------------------------------------
-
-
-def test_feasible_false_when_over_time(perf_model, rl_cfg, parallel_cfg):
-    """feasible should be False when time budget exceeded."""
-    report = perf_model.derive_targets(
-        total_devices=64, rl_cfg=rl_cfg,
-        gen_parallel=parallel_cfg, train_parallel=parallel_cfg,
-        time_budget_hours=0.000001,
+    expected = (
+        report.memory.train_feasible
+        and report.memory.gen_feasible
+        and report.memory.ref_feasible
     )
-    assert report.within_budget is False
-    assert report.feasible is False
+    assert report.feasible is expected
 
 
 # ---------------------------------------------------------------------------
-# Test 14: feasibility_check with time_budget_hours
+# Memory modeling: gradient buffer, ZeRO sharding, recompute/offload
 # ---------------------------------------------------------------------------
 
 
-def test_feasibility_check_with_time_budget(perf_model, rl_cfg, parallel_cfg):
-    """feasibility_check should accept optional time_budget_hours."""
-    report = perf_model.feasibility_check(
-        total_devices=64, rl_cfg=rl_cfg,
-        gen_parallel=parallel_cfg, train_parallel=parallel_cfg,
-        time_budget_hours=0.000001,
+def test_pretraining_memory_includes_gradient(perf_model, rl_cfg, parallel_cfg):
+    """Mixed-precision training holds a gradient buffer (same dtype as weights)."""
+    r = perf_model.derive_pretraining(64, rl_cfg, parallel_cfg)
+    assert r["grad_gb"] > 0
+    assert r["grad_gb"] == pytest.approx(r["weight_gb"], rel=0.01)
+    assert r["total_train_gb"] == pytest.approx(
+        r["weight_gb"] + r["grad_gb"] + r["optimizer_gb"] + r["activation_peak_gb"],
+        rel=1e-3,
     )
-    assert report.within_budget is False
-    assert report.feasible is False
+
+
+def test_pretraining_zero3_shards_weight_grad_optimizer(perf_model, rl_cfg):
+    base = perf_model.derive_pretraining(
+        64, rl_cfg, ParallelismConfig(tp=8, pp=1, dp=8, zero_stage=0)
+    )
+    z3 = perf_model.derive_pretraining(
+        64, rl_cfg, ParallelismConfig(tp=8, pp=1, dp=8, zero_stage=3)
+    )
+    for key in ("weight_gb", "grad_gb", "optimizer_gb"):
+        assert z3[key] == pytest.approx(base[key] / 8, rel=0.02), key
+
+
+def test_pretraining_recompute_and_offload_reduce_activation(perf_model, rl_cfg):
+    base = perf_model.derive_pretraining(64, rl_cfg, ParallelismConfig(tp=8, pp=1, dp=8))
+    full = perf_model.derive_pretraining(
+        64, rl_cfg, ParallelismConfig(tp=8, pp=1, dp=8, full_recomputation=True)
+    )
+    off = perf_model.derive_pretraining(
+        64, rl_cfg, ParallelismConfig(tp=8, pp=1, dp=8, activation_offload=True)
+    )
+    # Retained activation stack is well above the old instantaneous-only peak.
+    assert base["activation_peak_gb"] > 0.5
+    assert full["activation_peak_gb"] < base["activation_peak_gb"]
+    assert off["activation_peak_gb"] < full["activation_peak_gb"]
+
+
+def test_pretraining_grad_offload_zeroes_gradient(perf_model, rl_cfg):
+    off = perf_model.derive_pretraining(
+        64, rl_cfg, ParallelismConfig(tp=8, pp=1, dp=8, grad_offload=True)
+    )
+    assert off["grad_gb"] == 0

@@ -1,4 +1,4 @@
-# RL Training Performance Modeling — Design Spec
+# LLM Performance Modeling — Design Spec
 
 **Date:** 2026-03-25
 **Status:** Draft
@@ -14,7 +14,7 @@
 |------|------|
 | ModelConfig | 模型结构（Dense/MoE, attention type, layers, dims） |
 | HardwareConfig | 硬件规格（910C/CM384, FLOPS, bandwidth, 互联） |
-| RLConfig | RL 参数（prompt 数, group_size, avg/max response len） |
+| WorkloadConfig | RL 参数（prompt 数, group_size, avg/max response len） |
 | ParallelismConfig | 并行策略（TP/SP/CP/PP/EP/DP, ZeRO, PP schedule） |
 | TimeBudget | 时间预算（可选） |
 
@@ -128,7 +128,7 @@ calibration:
   comm_efficiency: 0.70
 ```
 
-### 3.3 RLConfig
+### 3.3 WorkloadConfig
 
 ```yaml
 total_prompts: 100000
@@ -469,15 +469,15 @@ class TargetReport:
 ## 9. CLI (cli.py)
 
 ```bash
-rl-perf targets --model configs/models/llama3_1_8b.yaml \
+llm-perf targets --model configs/models/llama3_1_8b.yaml \
                 --hardware 910C --devices 64 \
                 --prompts 100000 --group-size 8 --time-budget 24h
 
-rl-perf check   --model ... --hardware ... --devices ...
-rl-perf plan    --model ... --hardware ... --time-budget ...
-rl-perf what-if --base results/last.json --group-size 16
-rl-perf sweep   --model ... --param group_size --values 4,8,16,32
-rl-perf search  --model ... --hardware ... --devices ...
+llm-perf check   --model ... --hardware ... --devices ...
+llm-perf plan    --model ... --hardware ... --time-budget ...
+llm-perf what-if --base results/last.json --group-size 16
+llm-perf sweep   --model ... --param group_size --values 4,8,16,32
+llm-perf search  --model ... --hardware ... --devices ...
 ```
 
 ## 10. Demo Models
@@ -520,7 +520,7 @@ RL_modeling/
 ├── configs/
 │   ├── models/          # 5 个 demo 模型
 │   └── hardware/        # 910C, CM384
-├── src/rl_perf/
+├── src/llm_perf/
 │   ├── __init__.py
 │   ├── cli.py           # ~100 行, CLI 入口
 │   ├── model.py         # ~200 行, 查询接口

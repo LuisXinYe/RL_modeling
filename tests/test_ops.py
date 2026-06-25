@@ -1,11 +1,11 @@
-"""Tests for rl_perf.ops — operator cost model and roofline analysis."""
+"""Tests for llm_perf.ops — operator cost model and roofline analysis."""
 
 from __future__ import annotations
 
 import pytest
 
-from rl_perf.config import CalibrationConfig, HardwareConfig, Phase
-from rl_perf.ops import (
+from llm_perf.config import CalibrationConfig, HardwareConfig, Phase
+from llm_perf.ops import (
     OpCost,
     comm_time,
     op_allreduce,
@@ -170,7 +170,7 @@ def test_op_gqa_attention_prefill():
     assert cost.flops > 0
     assert cost.weight_bytes > 0
     # GQA should have fewer weight_bytes than MHA (fewer KV heads)
-    from rl_perf.ops import op_mha_attention
+    from llm_perf.ops import op_mha_attention
 
     mha_cost = op_mha_attention(
         num_heads=num_heads,
@@ -343,10 +343,10 @@ def test_comm_time(hw: HardwareConfig):
     # Inter-node should be slower (lower BW + latency)
     assert t_inter > t_intra
 
-    # Verify intra-node formula: comm_bytes / (bw * eff) only (no latency)
+    # Verify intra-node ring formula: bandwidth term + 2*(N-1) latency steps
     expected_intra = cost.comm_bytes / (
         hw.intra_node_bw_gb_s * 1e9 * hw.calibration.comm_efficiency
-    )
+    ) + 2 * (8 - 1) * (hw.intra_node_latency_us * 1e-6)
     assert t_intra == pytest.approx(expected_intra)
 
     # Zero comm_bytes => zero time
@@ -372,15 +372,14 @@ def test_comm_time_ring_vs_tree(hw: HardwareConfig):
     assert t_tree < t_ring
 
 
-def test_comm_time_intra_node_no_latency(hw: HardwareConfig):
-    """Intra-node communication has zero latency overhead."""
+def test_comm_time_intra_node_includes_latency(hw: HardwareConfig):
+    """Intra-node ring comm = bandwidth term + 2*(N-1) latency steps."""
     cost = OpCost(comm_bytes=1e9)
     t = comm_time(cost, hw, group_size=8, is_intra_node=True, algorithm="ring")
-    # Should be purely bandwidth-limited
-    expected_bw_time = 1e9 / (
+    expected = 1e9 / (
         hw.intra_node_bw_gb_s * 1e9 * hw.calibration.comm_efficiency
-    )
-    assert t == pytest.approx(expected_bw_time)
+    ) + 2 * (8 - 1) * (hw.intra_node_latency_us * 1e-6)
+    assert t == pytest.approx(expected)
 
 
 def test_comm_time_alltoall(hw: HardwareConfig):
@@ -526,3 +525,33 @@ def test_gqa_attention_flops_formula():
     expected_attn = 4 * d_qo * seq * batch_tokens  # uses d_qo, not d
     expected = expected_proj + expected_attn
     assert cost.flops == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# Decode reads the KV cache (memory traffic scales with context + batch)
+# ---------------------------------------------------------------------------
+
+
+def test_decode_attention_reads_kv_cache():
+    """Decode attention mem_rw must include KV cache reads that grow with kv_len.
+
+    Regression guard: without this, decode is dominated by fixed weight loads
+    and becomes insensitive to batch / context length (and thus to gen DP).
+    """
+    H, G, d_h, d, batch = 32, 8, 128, 4096, 16
+    short = op_gqa_attention(H, G, d_h, d, batch, 1, Phase.DECODE, kv_len=128)
+    long = op_gqa_attention(H, G, d_h, d, batch, 1, Phase.DECODE, kv_len=8192)
+    assert long.mem_rw > short.mem_rw
+    # Extra traffic = batch * Δkv_len * 2(K,V) * d_kv * dtype_bytes
+    d_kv = G * d_h
+    assert long.mem_rw - short.mem_rw == pytest.approx(
+        batch * (8192 - 128) * 2 * d_kv * 2
+    )
+
+
+def test_prefill_attention_no_kv_cache_read():
+    """Prefill does not add a separate KV-cache read term (self-attention)."""
+    H, G, d_h, d, batch = 32, 8, 128, 4096, 2
+    a = op_gqa_attention(H, G, d_h, d, batch, 512, Phase.PREFILL)
+    b = op_gqa_attention(H, G, d_h, d, batch, 512, Phase.PREFILL, kv_len=8192)
+    assert a.mem_rw == pytest.approx(b.mem_rw)

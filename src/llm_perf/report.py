@@ -10,7 +10,6 @@ class TrainBreakdown:
     in offline mode, generation is a separate phase and gen_step is 0.
     """
 
-    vit: float = 0.0       # Vision encoder forward+backward
     reward_fwd: float = 0.0    # Reward model forward
     old_logprob_fwd: float = 0.0  # Old policy log-prob forward
     policy_update: float = 0.0 # Policy fwd+bwd update
@@ -42,17 +41,14 @@ class MemoryProfile:
     ref_model_gb: float  # Reference model weight memory in GB (0 if offloaded/absent)
     ref_activation_peak_gb: float  # Reference forward peak activation memory in GB
     reward_model_gb: float  # Reward model weight memory in GB (0 if no reward model)
-    ve_weight_gb: float  # Vision encoder weight memory in GB (0 if no ViT)
-    ve_optimizer_gb: float  # Vision encoder optimizer memory in GB (0 if no ViT)
-    ve_weight_gen_gb: float  # ViT weight in GB per device during generation phase
-    ve_weight_ref_gb: float  # ViT weight in GB per device during reference phase
-    total_train_gb: float  # Total training memory: weights + optimizer + activations + ref + reward + ve
+    total_train_gb: float  # Total training memory: weights + grads + optimizer + activations + ref + reward
     total_gen_gb: float  # Total generation memory: weights + KV cache
     total_ref_gb: float  # Total reference memory: ref weights + ref activation peak
     usable_hbm_gb: float  # Usable HBM capacity in GB (after framework overhead)
     train_feasible: bool  # True if total_train_gb < usable_hbm_gb
     gen_feasible: bool  # True if total_gen_gb < usable_hbm_gb
     ref_feasible: bool  # True if total_ref_gb < usable_hbm_gb
+    grad_gb: float = 0.0  # Gradient buffer memory in GB (per device, after ZeRO/offload)
 
 
 @dataclass
@@ -94,7 +90,7 @@ def format_table(report: TargetReport) -> str:
     status_str = "FEASIBLE" if not reasons else f"NOT FEASIBLE: {' + '.join(reasons)}"
     lines = [
         "=" * 60,
-        "          RL Training Performance Report",
+        "          LLM Performance Report",
         "=" * 60,
         f" Step time:         {report.step_time_seconds:.1f} s  [{status_str}]",
         "-" * 60,
@@ -128,7 +124,6 @@ def format_table(report: TargetReport) -> str:
     if sb and sb.total > 0:
         lines.append(f"   Time:            {sb.total:.1f} s")
         sub_steps = [
-            ("vit", "vit", sb.vit),
             ("reward_fwd", "reward_fwd", sb.reward_fwd),
             ("old_logprob_fwd", "old_logp_fwd", sb.old_logprob_fwd),
             ("policy_update", "policy_update", sb.policy_update),

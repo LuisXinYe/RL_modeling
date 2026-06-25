@@ -1,4 +1,4 @@
-# RL Performance Modeling (rl-perf)
+# LLM Performance Modeling (llm-perf)
 
 ## Project Overview
 RL 训练性能建模工具。给定模型、卡数、数据量，推导 epoch 时间上限和各团队 TPS 指标。

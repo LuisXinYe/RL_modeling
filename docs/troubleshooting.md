@@ -1,14 +1,14 @@
 # Troubleshooting
 
-Common issues, symptoms, and fixes for rl-perf.
+Common issues, symptoms, and fixes for llm-perf.
 
 ---
 
-## `command not found: rl-perf`
+## `command not found: llm-perf`
 
 **Symptom:**
 ```
-zsh: command not found: rl-perf
+zsh: command not found: llm-perf
 ```
 
 **Cause:** The package is not installed in your active Python environment.
@@ -41,10 +41,10 @@ Error: file not found: [Errno 2] No such file or directory: 'configs/models/my_m
 
 ```bash
 # Using shortname
-rl-perf targets -m configs/models/qwen2_5_72b.yaml -hw 910C -d 64 -p 10000
+llm-perf targets -m configs/models/qwen2_5_72b.yaml -hw 910C -d 64 -p 10000
 
 # Using full path
-rl-perf targets -m configs/models/qwen2_5_72b.yaml -hw configs/hardware/ascend_910c.yaml -d 64 -p 10000
+llm-perf targets -m configs/models/qwen2_5_72b.yaml -hw configs/hardware/ascend_910c.yaml -d 64 -p 10000
 ```
 
 ---
@@ -128,7 +128,7 @@ Memory:
 4. **Enable full recomputation** -- `full_recomputation: true` for maximum memory savings (+30% time overhead).
 5. **Enable ZeRO stage 1+** -- Shards optimizer states across DP ranks. Set `zero_stage: 1` in parallelism config.
 6. **Offload optimizer to CPU** -- `optimizer_offload: true` (+15% time overhead).
-7. **Offload reference model** -- Set `ref_offload_cpu: true` in RLConfig.
+7. **Offload reference model** -- Set `ref_offload_cpu: true` in WorkloadConfig.
 8. **Increase PP** -- Splits model across pipeline stages, reducing per-device weight and activation memory.
 
 ### Generation OOM
@@ -170,7 +170,7 @@ ModuleNotFoundError: No module named 'pydantic'
 ```
 or syntax errors in type hints.
 
-**Cause:** rl-perf requires Python 3.10 or later.
+**Cause:** llm-perf requires Python 3.10 or later.
 
 **Fix:**
 ```bash
@@ -209,5 +209,5 @@ If the predictions seem wrong:
 5. **Compare with `--format json`** -- JSON output includes all fields for detailed inspection.
 
 ```bash
-rl-perf targets -m configs/models/qwen2_5_72b.yaml -hw 910C -d 64 -p 10000 -f json
+llm-perf targets -m configs/models/qwen2_5_72b.yaml -hw 910C -d 64 -p 10000 -f json
 ```

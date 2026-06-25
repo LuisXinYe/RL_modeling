@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from rl_perf.ui.hf_import import SUPPORTED_ARCHITECTURES, hf_config_to_model_config
+from llm_perf.ui.hf_import import SUPPORTED_ARCHITECTURES, hf_config_to_model_config
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Tests for rl_perf.config module."""
+"""Tests for llm_perf.config module."""
 from __future__ import annotations
 
 import tempfile
@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from rl_perf.config import (
+from llm_perf.config import (
     HardwareConfig,
     LayerConfig,
     ModelConfig,
     ParallelismConfig,
     Phase,
-    RLConfig,
+    WorkloadConfig,
     load_hardware_config,
     load_model_config,
 )
@@ -26,7 +26,7 @@ from rl_perf.config import (
 def test_layer_config_defaults():
     layer = LayerConfig()
     assert layer.attention == "GQA"
-    assert layer.num_heads == 32
+    assert layer.num_heads == 64
     assert layer.num_kv_heads == 8
     assert layer.head_dim == 128
     assert layer.ffn == "SwiGLU"
@@ -111,15 +111,10 @@ def test_phase_enum():
     assert Phase.TRAIN_BWD.value == "train_bwd"
 
 
-def test_rl_config_total_responses():
-    rl = RLConfig(total_prompts=1000, group_size=8)
-    assert rl.total_responses == 8000
-
-
 def test_rl_config_defaults():
-    rl = RLConfig(total_prompts=500)
-    assert rl.group_size == 8
-    assert rl.avg_prompt_len == 512
+    rl = WorkloadConfig()
+    assert rl.group_size == 16
+    assert rl.avg_prompt_len == 2048
     assert rl.avg_response_len == 2048
     assert rl.reference_model is True
 
@@ -204,13 +199,13 @@ def test_load_all_model_configs(name):
 
 
 def test_rlconfig_speculative_decoding_defaults():
-    cfg = RLConfig(total_prompts=1000)
+    cfg = WorkloadConfig(total_prompts=1000)
     assert cfg.use_speculative_decoding is False
     assert cfg.mtp_acceptance_len is None
 
 
 def test_rlconfig_speculative_decoding_set():
-    cfg = RLConfig(total_prompts=1000, use_speculative_decoding=True, mtp_acceptance_len=3)
+    cfg = WorkloadConfig(total_prompts=1000, use_speculative_decoding=True, mtp_acceptance_len=3)
     assert cfg.use_speculative_decoding is True
     assert cfg.mtp_acceptance_len == 3
 

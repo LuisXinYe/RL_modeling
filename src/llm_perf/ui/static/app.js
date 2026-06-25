@@ -1,5 +1,5 @@
 /**
- * rl-perf SPA — Application Logic
+ * llm-perf SPA — Application Logic
  *
  * Handles: accordion, tabs, form state, API calls, Plotly charts.
  */
@@ -13,7 +13,27 @@ const state = {
   lastSearch: null,
   hasRun: false,
   activeParPhase: 'train',
+  scenario: 'post_training', // 'inference' | 'pretraining' | 'post_training'
   modified: { model: false, hardware: false, rl: false, search: false },
+};
+
+/* Per-scenario UI config: brand tagline, RL section title, KPI cards. */
+const SCENARIOS = {
+  inference: {
+    tagline: 'Inference Performance Modeling',
+    rlTitle: 'Workload',
+    parLegend: 'Parallelism (generation)',
+  },
+  pretraining: {
+    tagline: 'Pretraining Performance Modeling',
+    rlTitle: 'Training',
+    parLegend: 'Parallelism (training)',
+  },
+  post_training: {
+    tagline: 'Post-Training (RL) Performance Modeling',
+    rlTitle: 'RL Training',
+    parLegend: 'Parallelism',
+  },
 };
 
 /* ── DOM refs ─────────────────────────────────────────── */
@@ -25,14 +45,130 @@ document.addEventListener('DOMContentLoaded', async () => {
   initAccordion();
   initTabs();
   initDrawer();
+  initScenarioTabs();
   initSegmentedControls();
   initConditionalFields();
   initAutoComputed();
   initButtons();
   initJsonEditor();
+  applyScenario('post_training', { rerun: false });
   await loadConfigs();
   initTemplateListener();
 });
+
+/* ── Scenario Tabs ────────────────────────────────────── */
+function initScenarioTabs() {
+  $$('.scenario-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const scn = tab.dataset.scenario;
+      if (scn === state.scenario) return;
+      applyScenario(scn, { rerun: true });
+    });
+  });
+}
+
+function applyScenario(scn, { rerun = false } = {}) {
+  state.scenario = scn;
+  const cfg = SCENARIOS[scn] || SCENARIOS.post_training;
+
+  // Active tab styling
+  $$('.scenario-tab').forEach((t) =>
+    t.classList.toggle('active', t.dataset.scenario === scn)
+  );
+
+  // Header tagline + RL section title + parallelism legend
+  const tagline = $('#brand-tagline');
+  if (tagline) tagline.textContent = cfg.tagline;
+  const rlTitle = $('#rl-section-title');
+  if (rlTitle) rlTitle.textContent = cfg.rlTitle;
+  const parLegend = $('#parallelism-legend');
+  if (parLegend) parLegend.textContent = cfg.parLegend;
+
+  applyScenarioVisibility(scn);
+  configureKPIs(scn);
+
+  // Reset chart back to Timeline (search-results may be hidden now)
+  const activeTab = $('.chart-tab.active');
+  if (activeTab && activeTab.classList.contains('hidden')) {
+    $$('.chart-tab').forEach((t) => t.classList.remove('active'));
+    $$('.chart-panel').forEach((p) => p.classList.remove('active'));
+    $('.chart-tab[data-tab="timeline"]').classList.add('active');
+    $('#panel-timeline').classList.add('active');
+  }
+
+  if (rerun && state.hasRun) {
+    runAnalysis();
+  }
+}
+
+/* Toggle elements carrying a data-scn attribute for the active scenario. */
+function applyScenarioVisibility(scn) {
+  $$('[data-scn]').forEach((el) => {
+    const scopes = el.dataset.scn.split(/\s+/).filter(Boolean);
+    el.classList.toggle('hidden', !scopes.includes(scn));
+  });
+
+  // Parallelism panels: post-training uses the Train/Gen/Ref switcher;
+  // inference shows only the gen panel, pretraining only the train panel.
+  const panels = {
+    train: $('#par-panel-train'),
+    gen: $('#par-panel-gen'),
+    ref: $('#par-panel-ref'),
+  };
+  if (scn === 'inference') {
+    panels.train.classList.add('hidden');
+    panels.gen.classList.remove('hidden');
+    panels.ref.classList.add('hidden');
+  } else if (scn === 'pretraining') {
+    panels.train.classList.remove('hidden');
+    panels.gen.classList.add('hidden');
+    panels.ref.classList.add('hidden');
+  } else {
+    // post_training: honor the active phase from the switcher
+    const phase = state.activeParPhase;
+    panels.train.classList.toggle('hidden', phase !== 'train');
+    panels.gen.classList.toggle('hidden', phase !== 'gen');
+    panels.ref.classList.toggle('hidden', phase !== 'ref');
+  }
+}
+
+/* Configure the KPI card labels (and which are visible) per scenario. */
+const KPI_CONFIG = {
+  inference: [
+    { id: 'kpi-epoch', label: 'Gen Time' },
+    { id: 'kpi-gen', label: 'Gen TPS' },
+    { id: 'kpi-train', label: 'Samples/s' },
+    { id: 'kpi-ref', label: 'KV Cache' },
+  ],
+  pretraining: [
+    { id: 'kpi-epoch', label: 'Step Time' },
+    { id: 'kpi-gen', label: 'Train TPS' },
+    { id: 'kpi-train', label: 'Samples/s' },
+    { id: 'kpi-ref', label: 'Train Mem' },
+  ],
+  post_training: [
+    { id: 'kpi-epoch', label: 'Step Time' },
+    { id: 'kpi-gen', label: 'Gen TPS' },
+    { id: 'kpi-train', label: 'Train TPS' },
+    { id: 'kpi-ref', label: 'Ref TPS' },
+  ],
+};
+
+function configureKPIs(scn) {
+  const cfg = KPI_CONFIG[scn] || KPI_CONFIG.post_training;
+  cfg.forEach((k) => {
+    const card = $(`#${k.id}`);
+    if (!card) return;
+    card.classList.remove('hidden');
+    const labelEl = card.querySelector('.kpi-label');
+    if (labelEl) labelEl.textContent = k.label;
+    if (!state.hasRun) {
+      card.querySelector('.kpi-value').innerHTML = '&mdash;';
+      card.querySelector('.kpi-detail').textContent = 'awaiting analysis';
+      card.dataset.status = 'neutral';
+    }
+  });
+}
 
 /* ── Accordion ────────────────────────────────────────── */
 function initAccordion() {
@@ -154,7 +290,6 @@ function initConditionalFields() {
   const ffnSelect = $('#ffn-type');
   const residualSelect = $('#residual-type');
   const specDecode = $('#spec-decode');
-  const hasVe = $('#has-vision-encoder');
   const hasMtp = $('#has-mtp-aux');
 
   if (attnSelect) {
@@ -179,12 +314,6 @@ function initConditionalFields() {
     specDecode.addEventListener('change', () => {
       $('#mtp-fields').classList.toggle('hidden', !specDecode.checked);
       markModified('rl');
-    });
-  }
-  if (hasVe) {
-    hasVe.addEventListener('change', () => {
-      updateConditionalFields();
-      markModified('model');
     });
   }
   if (hasMtp) {
@@ -256,15 +385,6 @@ function updateConditionalFields() {
 
   // Update layers-summary badge to reflect the current attention type
   updateLayersSummaryBadge(attn);
-
-  // Vision encoder fields visibility
-  const hasVe = $('#has-vision-encoder');
-  if (hasVe) {
-    const veFields = $('#ve-fields');
-    // Show sub-fields only when checkbox is checked
-    const veSubFields = veFields.querySelectorAll('.field-grid, .field:not(:first-child)');
-    veSubFields.forEach((el) => el.classList.toggle('hidden', !hasVe.checked));
-  }
 
   // MTP auxiliary sub-fields
   const hasMtp = $('#has-mtp-aux');
@@ -353,9 +473,7 @@ function updateModelSummary() {
   const layers = $('#num-layers').value;
   const attn = $('#attention-type').value;
   const dtype = $('#dtype').value;
-  const hasVe = $('#has-vision-encoder') && $('#has-vision-encoder').checked;
-  const suffix = hasVe ? ' + ViT' : '';
-  $('#model-summary').textContent = `${name} \u00b7 ${layers}L \u00b7 ${attn} \u00b7 ${dtype}${suffix}`;
+  $('#model-summary').textContent = `${name} \u00b7 ${layers}L \u00b7 ${attn} \u00b7 ${dtype}`;
 }
 
 function updateLayersSummaryBadge(attn) {
@@ -504,27 +622,6 @@ function applyModelTemplate(name) {
     $('#mhc-expansion').value = t.layer.mhc_expansion || 4;
   }
 
-  // Vision encoder
-  if (t.vision_encoder) {
-    $('#ve-fields').classList.remove('hidden');
-    $('#has-vision-encoder').checked = true;
-    $('#ve-hidden-size').value = t.vision_encoder.hidden_size || 1536;
-    $('#ve-num-layers').value = t.vision_encoder.num_layers || 26;
-    $('#ve-num-heads').value = t.vision_encoder.num_heads || 16;
-    $('#ve-intermediate-size').value = t.vision_encoder.intermediate_size || 4608;
-    $('#ve-ffn').value = t.vision_encoder.ffn || 'SwiGLU';
-    $('#ve-anyres-max-pixels').value = t.vision_encoder.anyres_max_pixels || 1806336;
-    $('#ve-patch-size').value = t.vision_encoder.patch_size || 14;
-    $('#ve-temporal-patch-size').value = t.vision_encoder.temporal_patch_size || 2;
-    $('#ve-merge-size').value = t.vision_encoder.merge_size || 2;
-    $('#ve-token-down-size').value = t.vision_encoder.mm_vision_token_down_size || 2;
-    if (t.vision_encoder.image_seq_len !== undefined) {
-      $('#ve-image-seq-len').value = t.vision_encoder.image_seq_len;
-    }
-  } else {
-    $('#has-vision-encoder').checked = false;
-  }
-
   // Auxiliary
   if (t.auxiliary && t.auxiliary.mtp_depth) {
     $('#mtp-aux-fields').classList.remove('hidden');
@@ -602,6 +699,7 @@ function buildParallelismInput(phase) {
 /* ── Build Request Payloads ───────────────────────────── */
 function buildPredictRequest() {
   const req = {
+    scenario: state.scenario,
     model: {
       name: $('#model-name').value,
       hidden_size: intVal('hidden-size'),
@@ -650,22 +748,6 @@ function buildPredictRequest() {
       mtp_acceptance_len: $('#spec-decode').checked ? intValOrNull('mtp-acceptance-len') : null,
     },
   };
-
-  // Vision encoder
-  if ($('#has-vision-encoder') && $('#has-vision-encoder').checked) {
-    req.model.vision_encoder = {
-      hidden_size: intVal('ve-hidden-size'),
-      num_layers: intVal('ve-num-layers'),
-      num_heads: intVal('ve-num-heads'),
-      intermediate_size: intVal('ve-intermediate-size'),
-      ffn: $('#ve-ffn').value,
-      anyres_max_pixels: intVal('ve-anyres-max-pixels'),
-      patch_size: intVal('ve-patch-size'),
-      temporal_patch_size: intVal('ve-temporal-patch-size'),
-      merge_size: intVal('ve-merge-size'),
-      mm_vision_token_down_size: intVal('ve-token-down-size'),
-    };
-  }
 
   // Auxiliary
   if ($('#has-mtp-aux') && $('#has-mtp-aux').checked) {
@@ -857,25 +939,6 @@ function applyHFData(data) {
     $('#mhc-expansion').value = data.layer.mhc_expansion || 4;
   }
 
-  // Vision encoder
-  if (data.vision_encoder) {
-    $('#ve-fields').classList.remove('hidden');
-    $('#has-vision-encoder').checked = true;
-    $('#ve-hidden-size').value = data.vision_encoder.hidden_size || 1536;
-    $('#ve-num-layers').value = data.vision_encoder.num_layers || 26;
-    $('#ve-num-heads').value = data.vision_encoder.num_heads || 16;
-    $('#ve-intermediate-size').value = data.vision_encoder.intermediate_size || 4608;
-    $('#ve-ffn').value = data.vision_encoder.ffn || 'SwiGLU';
-    $('#ve-anyres-max-pixels').value = data.vision_encoder.anyres_max_pixels || 1806336;
-    $('#ve-patch-size').value = data.vision_encoder.patch_size || 14;
-    $('#ve-temporal-patch-size').value = data.vision_encoder.temporal_patch_size || 2;
-    $('#ve-merge-size').value = data.vision_encoder.merge_size || 2;
-    $('#ve-token-down-size').value = data.vision_encoder.mm_vision_token_down_size || 2;
-    if (data.vision_encoder.image_seq_len !== undefined) {
-      $('#ve-image-seq-len').value = data.vision_encoder.image_seq_len;
-    }
-  }
-
   // Auxiliary
   if (data.auxiliary && data.auxiliary.mtp_depth) {
     $('#mtp-aux-fields').classList.remove('hidden');
@@ -950,27 +1013,6 @@ function applyPreset(preset) {
       $('#rope-dim').value = m.layer.rope_dim || 0;
       $('#window-size').value = m.layer.window_size || 0;
       $('#mhc-expansion').value = m.layer.mhc_expansion || 4;
-    }
-
-    // Vision encoder
-    if (m.vision_encoder) {
-      $('#ve-fields').classList.remove('hidden');
-      $('#has-vision-encoder').checked = true;
-      $('#ve-hidden-size').value = m.vision_encoder.hidden_size || 1536;
-      $('#ve-num-layers').value = m.vision_encoder.num_layers || 26;
-      $('#ve-num-heads').value = m.vision_encoder.num_heads || 16;
-      $('#ve-intermediate-size').value = m.vision_encoder.intermediate_size || 4608;
-      $('#ve-ffn').value = m.vision_encoder.ffn || 'SwiGLU';
-      $('#ve-anyres-max-pixels').value = m.vision_encoder.anyres_max_pixels || 1806336;
-      $('#ve-patch-size').value = m.vision_encoder.patch_size || 14;
-      $('#ve-temporal-patch-size').value = m.vision_encoder.temporal_patch_size || 2;
-      $('#ve-merge-size').value = m.vision_encoder.merge_size || 2;
-      $('#ve-token-down-size').value = m.vision_encoder.mm_vision_token_down_size || 2;
-      if (m.vision_encoder.image_seq_len !== undefined) {
-        $('#ve-image-seq-len').value = m.vision_encoder.image_seq_len;
-      }
-    } else {
-      $('#has-vision-encoder').checked = false;
     }
 
     // Auxiliary
@@ -1191,6 +1233,9 @@ function hideEmptyState() {
 
 /* ── KPI Rendering ────────────────────────────────────── */
 function renderKPIs(kpis, memory) {
+  if (state.scenario === 'inference') return renderKPIsInference(kpis, memory);
+  if (state.scenario === 'pretraining') return renderKPIsPretraining(kpis, memory);
+
   const feasible = kpis.feasible && memory.train_feasible && memory.gen_feasible && memory.ref_feasible;
 
   // Step Time
@@ -1224,6 +1269,54 @@ function renderKPIs(kpis, memory) {
   });
 }
 
+function renderKPIsInference(kpis, memory) {
+  const ok = memory.gen_feasible;
+  setKPI('kpi-epoch', {
+    value: `${kpis.gen_time_seconds.toFixed(1)}s`,
+    detail: `prefill ${kpis.prefill_seconds.toFixed(2)}s + decode ${kpis.decode_seconds.toFixed(1)}s`,
+    status: ok ? 'success' : 'error',
+  });
+  setKPI('kpi-gen', {
+    value: formatNumber(kpis.gen_tps_target),
+    detail: 'tokens / sec',
+    status: ok ? 'success' : 'error',
+  });
+  setKPI('kpi-train', {
+    value: kpis.gen_samples_per_sec.toFixed(2),
+    detail: `${kpis.decode_ms_per_token.toFixed(1)} ms/token`,
+    status: ok ? 'success' : 'error',
+  });
+  setKPI('kpi-ref', {
+    value: `${kpis.kv_cache_gb.toFixed(1)}GB`,
+    detail: ok ? 'Fits HBM' : 'OOM',
+    status: ok ? 'success' : 'error',
+  });
+}
+
+function renderKPIsPretraining(kpis, memory) {
+  const ok = memory.train_feasible;
+  setKPI('kpi-epoch', {
+    value: `${kpis.step_time_seconds.toFixed(1)}s`,
+    detail: ok ? 'Feasible' : 'Infeasible',
+    status: ok ? 'success' : 'error',
+  });
+  setKPI('kpi-gen', {
+    value: formatNumber(kpis.train_tps_target),
+    detail: 'tokens / sec',
+    status: ok ? 'success' : 'error',
+  });
+  setKPI('kpi-train', {
+    value: kpis.train_samples_per_sec.toFixed(2),
+    detail: 'samples / sec',
+    status: ok ? 'success' : 'error',
+  });
+  setKPI('kpi-ref', {
+    value: `${kpis.total_train_gb.toFixed(1)}GB`,
+    detail: `of ${memory.usable_hbm_gb}GB`,
+    status: ok ? 'success' : 'error',
+  });
+}
+
 function renderErrorKPIs() {
   ['kpi-epoch', 'kpi-gen', 'kpi-train', 'kpi-ref'].forEach((id) => {
     setKPI(id, { value: '\u2014', detail: 'error', status: 'error' });
@@ -1241,6 +1334,9 @@ function setKPI(id, { value, detail, status }) {
 
 /* ── Chart: Timeline ──────────────────────────────────── */
 function renderTimeline(timeline) {
+  if (state.scenario === 'inference') return renderTimelineInference(timeline);
+  if (state.scenario === 'pretraining') return renderTimelinePretraining(timeline);
+
   const genS = timeline.gen_seconds;
   const trainS = timeline.train_seconds;
   const refS = timeline.ref_seconds || 0;
@@ -1381,8 +1477,81 @@ function renderTimeline(timeline) {
   Plotly.newPlot('chart-timeline', traces, layout, plotlyConfig());
 }
 
+function renderTimelineInference(timeline) {
+  const prefill = timeline.prefill_seconds || 0;
+  const decode = timeline.decode_seconds || 0;
+  const total = timeline.gen_seconds || prefill + decode;
+
+  const traces = [
+    {
+      y: ['Generation'], x: [prefill], type: 'bar', orientation: 'h',
+      name: 'Prefill', marker: { color: '#7c3aed' },
+      text: [`${prefill.toFixed(2)}s`], textposition: 'inside',
+      textfont: { color: '#fff', size: 12 },
+    },
+    {
+      y: ['Generation'], x: [decode], type: 'bar', orientation: 'h',
+      name: 'Decode', marker: { color: '#06b6d4' },
+      text: [`${decode.toFixed(1)}s`], textposition: 'inside',
+      textfont: { color: '#fff', size: 12 },
+    },
+  ];
+
+  const layout = {
+    barmode: 'stack',
+    ...chartLayout('Generation Timeline (seconds)'),
+    xaxis: { title: 'Seconds', gridcolor: '#f0eeeb', zeroline: false },
+    yaxis: { automargin: true },
+    height: 160,
+    margin: { l: 90, r: 30, t: 30, b: 40 },
+    annotations: total > 0 ? [{
+      x: total, y: 0, text: `${total.toFixed(1)}s`, showarrow: false,
+      xanchor: 'left', font: { size: 12, color: '#1a1a1a' },
+    }] : [],
+  };
+
+  Plotly.newPlot('chart-timeline', traces, layout, plotlyConfig());
+}
+
+function renderTimelinePretraining(timeline) {
+  const bd = timeline.breakdown || {};
+  const parts = [
+    { name: 'Policy Update', value: bd.policy_update || 0, color: '#ea580c' },
+    { name: 'Recompute', value: bd.recompute || 0, color: '#f59e0b' },
+    { name: 'PP Bubble', value: bd.pp_bubble || 0, color: '#fbbf24' },
+    { name: 'Optim Offload', value: bd.optim_offload || 0, color: '#c4b5fd' },
+  ].filter((p) => p.value > 0);
+
+  const total = bd.total || parts.reduce((a, p) => a + p.value, 0);
+
+  const traces = parts.map((p) => ({
+    y: ['Step'], x: [p.value], type: 'bar', orientation: 'h',
+    name: p.name, marker: { color: p.color },
+    text: [`${p.value.toFixed(2)}s`], textposition: 'inside',
+    textfont: { color: '#fff', size: 11 },
+  }));
+
+  const layout = {
+    barmode: 'stack',
+    ...chartLayout('Training Step Breakdown (seconds)'),
+    xaxis: { title: 'Seconds', gridcolor: '#f0eeeb', zeroline: false },
+    yaxis: { automargin: true },
+    height: 160,
+    margin: { l: 80, r: 30, t: 30, b: 40 },
+    annotations: total > 0 ? [{
+      x: total, y: 0, text: `${total.toFixed(1)}s`, showarrow: false,
+      xanchor: 'left', font: { size: 12, color: '#1a1a1a' },
+    }] : [],
+  };
+
+  Plotly.newPlot('chart-timeline', traces, layout, plotlyConfig());
+}
+
 /* ── Chart: Memory ────────────────────────────────────── */
 function renderMemory(memory) {
+  if (state.scenario === 'inference') return renderMemoryInference(memory);
+  if (state.scenario === 'pretraining') return renderMemoryPretraining(memory);
+
   const categories = ['Training', 'Generation', 'Reference'];
 
   // Each phase has its own per-device weight (different parallelism configs).
@@ -1401,17 +1570,13 @@ function renderMemory(memory) {
 
   const trainTraces = [
     { y: categories, x: [memory.weight_gb, genWeight, refWeightBar], name: 'Weights', type: 'bar', orientation: 'h', marker: { color: '#7c3aed' } },
+    { y: categories, x: [memory.grad_gb || 0, 0, 0], name: 'Gradients', type: 'bar', orientation: 'h', marker: { color: '#a78bfa' } },
     { y: categories, x: [memory.optimizer_gb, 0, 0], name: 'Optimizer', type: 'bar', orientation: 'h', marker: { color: '#c4b5fd' } },
     { y: categories, x: [memory.activation_peak_gb, 0, 0], name: 'Activations', type: 'bar', orientation: 'h', marker: { color: '#f59e0b' } },
     { y: categories, x: [memory.ref_model_gb, 0, 0], name: 'Ref (resident)', type: 'bar', orientation: 'h', marker: { color: '#06b6d4' } },
     { y: categories, x: [0, memory.kv_cache_gb, 0], name: 'KV Cache', type: 'bar', orientation: 'h', marker: { color: '#16a34a' } },
     { y: categories, x: [0, 0, memory.ref_activation_peak_gb], name: 'Ref Activations', type: 'bar', orientation: 'h', marker: { color: '#67e8f9' } },
   ];
-  if (memory.ve_weight_gb > 0) {
-    const veGen = memory.ve_weight_gen_gb || 0;
-    const veRef = memory.ve_weight_ref_gb || 0;
-    trainTraces.push({ y: categories, x: [memory.ve_weight_gb, veGen, veRef], name: 'ViT Weights', type: 'bar', orientation: 'h', marker: { color: '#ec4899' } });
-  }
   if (memory.reward_model_gb > 0) {
     trainTraces.push({ y: categories, x: [memory.reward_model_gb, 0, 0], name: 'Reward', type: 'bar', orientation: 'h', marker: { color: '#f97316' } });
   }
@@ -1475,6 +1640,70 @@ function renderMemory(memory) {
   };
 
   Plotly.newPlot('chart-memory', trainTraces, layout, plotlyConfig());
+}
+
+function renderMemoryBars(category, components, totalGb, usableGb, feasible) {
+  // components: [{name, value, color}]
+  const traces = components
+    .filter((c) => c.value > 0)
+    .map((c) => ({
+      y: [category], x: [c.value], name: c.name, type: 'bar', orientation: 'h',
+      marker: { color: c.color },
+    }));
+
+  const shapes = [{
+    type: 'line', x0: usableGb, x1: usableGb, y0: -0.5, y1: 0.5,
+    line: { color: '#dc2626', width: 2, dash: 'dash' },
+  }];
+
+  const annotations = [
+    {
+      x: usableGb, y: 0.5, text: `HBM Limit: ${usableGb}GB`, showarrow: false,
+      font: { size: 11, color: '#dc2626' }, yref: 'paper', yanchor: 'bottom',
+    },
+    {
+      x: totalGb, y: category, text: `${totalGb.toFixed(1)}GB ${feasible ? 'OK' : 'OOM'}`,
+      showarrow: false, xanchor: 'left',
+      font: { size: 11, color: feasible ? '#16a34a' : '#dc2626' },
+    },
+  ];
+
+  const layout = {
+    barmode: 'stack',
+    ...chartLayout('Memory Breakdown (GB)'),
+    xaxis: { title: 'GB', gridcolor: '#f0eeeb', zeroline: false },
+    yaxis: { automargin: true },
+    shapes,
+    annotations,
+    height: 200,
+    margin: { l: 100, r: 60, t: 30, b: 40 },
+  };
+
+  Plotly.newPlot('chart-memory', traces, layout, plotlyConfig());
+}
+
+function renderMemoryInference(memory) {
+  renderMemoryBars(
+    'Generation',
+    [
+      { name: 'Weights', value: memory.gen_weight_gb, color: '#7c3aed' },
+      { name: 'KV Cache', value: memory.kv_cache_gb, color: '#16a34a' },
+    ],
+    memory.total_gen_gb, memory.usable_hbm_gb, memory.gen_feasible
+  );
+}
+
+function renderMemoryPretraining(memory) {
+  renderMemoryBars(
+    'Training',
+    [
+      { name: 'Weights', value: memory.weight_gb, color: '#7c3aed' },
+      { name: 'Gradients', value: memory.grad_gb || 0, color: '#a78bfa' },
+      { name: 'Optimizer', value: memory.optimizer_gb, color: '#c4b5fd' },
+      { name: 'Activations', value: memory.activation_peak_gb, color: '#f59e0b' },
+    ],
+    memory.total_train_gb, memory.usable_hbm_gb, memory.train_feasible
+  );
 }
 
 /* ── Chart: Topology ──────────────────────────────────── */

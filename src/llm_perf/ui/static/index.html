@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>rl-perf — RL Training Performance Modeling</title>
+  <title>llm-perf — LLM Performance Modeling</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300..800;1,9..40,300..800&display=swap" rel="stylesheet">
@@ -14,9 +14,14 @@
   <!-- ── Header ──────────────────────────────────────────── -->
   <header class="app-header">
     <div class="header-brand">
-      <span class="brand-mark">rl-perf</span>
-      <span class="brand-tagline">RL Training Performance Modeling</span>
+      <span class="brand-mark">llm-perf</span>
+      <span class="brand-tagline" id="brand-tagline">LLM Performance Modeling</span>
     </div>
+    <nav class="scenario-tabs" id="scenario-tabs" aria-label="Scenario">
+      <button class="scenario-tab" data-scenario="inference">Inference</button>
+      <button class="scenario-tab" data-scenario="pretraining">Pretraining</button>
+      <button class="scenario-tab active" data-scenario="post_training">Post-training</button>
+    </nav>
   </header>
 
   <!-- ── Mobile drawer toggle ────────────────────────────── -->
@@ -62,7 +67,6 @@
                   <option value="Mistral-7B">Mistral-7B</option>
                   <option value="Qwen3-235B-MoE">Qwen3-235B-MoE</option>
                   <option value="DeepSeekV3-671B">DeepSeekV3-671B</option>
-                  <option value="Pangu-74B-VL">Pangu-74B-VL</option>
                 </select>
               </div>
 
@@ -224,71 +228,6 @@
                 <span class="layers-summary-badge" id="layers-summary-badge"></span>
               </div>
 
-              <!-- Vision Encoder -->
-              <div class="conditional-fields hidden" id="ve-fields">
-                <div class="field">
-                  <label class="field-label field-label-inline">
-                    <input type="checkbox" id="has-vision-encoder"> Vision Encoder
-                  </label>
-                </div>
-                <div class="field-grid cols-2">
-                  <div class="field">
-                    <label class="field-label" for="ve-hidden-size">ViT Hidden</label>
-                    <input class="field-input" type="number" id="ve-hidden-size" value="1536">
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="ve-num-layers">ViT Layers</label>
-                    <input class="field-input" type="number" id="ve-num-layers" value="26">
-                  </div>
-                </div>
-                <div class="field-grid cols-2">
-                  <div class="field">
-                    <label class="field-label" for="ve-num-heads">ViT Heads</label>
-                    <input class="field-input" type="number" id="ve-num-heads" value="16">
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="ve-intermediate-size">ViT Interm.</label>
-                    <input class="field-input" type="number" id="ve-intermediate-size" value="4608">
-                  </div>
-                </div>
-                <div class="field-grid cols-2">
-                  <div class="field">
-                    <label class="field-label" for="ve-ffn">ViT FFN</label>
-                    <select class="field-select" id="ve-ffn">
-                      <option value="SwiGLU" selected>SwiGLU</option>
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="ve-image-seq-len">Image Seq Len</label>
-                    <input class="field-input readonly" type="number" id="ve-image-seq-len" value="576" readonly>
-                  </div>
-                </div>
-                <div class="field-grid cols-3">
-                  <div class="field">
-                    <label class="field-label" for="ve-anyres-max-pixels">Max Pixels</label>
-                    <input class="field-input" type="number" id="ve-anyres-max-pixels" value="1806336">
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="ve-patch-size">Patch Size</label>
-                    <input class="field-input" type="number" id="ve-patch-size" value="14">
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="ve-temporal-patch-size">Temporal Patch</label>
-                    <input class="field-input" type="number" id="ve-temporal-patch-size" value="2">
-                  </div>
-                </div>
-                <div class="field-grid cols-2">
-                  <div class="field">
-                    <label class="field-label" for="ve-merge-size">Merge Size</label>
-                    <input class="field-input" type="number" id="ve-merge-size" value="2">
-                  </div>
-                  <div class="field">
-                    <label class="field-label" for="ve-token-down-size">Token Down Size</label>
-                    <input class="field-input" type="number" id="ve-token-down-size" value="2">
-                  </div>
-                </div>
-              </div>
-
               <!-- MTP Auxiliary -->
               <div class="conditional-fields hidden" id="mtp-aux-fields">
                 <div class="field">
@@ -343,8 +282,8 @@
 
               <!-- 6D Parallelism — 3-Phase -->
               <fieldset class="field-group">
-                <legend class="field-label">Parallelism</legend>
-                <div class="segmented-control" id="par-phase">
+                <legend class="field-label" id="parallelism-legend">Parallelism</legend>
+                <div class="segmented-control" id="par-phase" data-scn="post_training">
                   <button class="seg-btn active" data-value="train">Train</button>
                   <button class="seg-btn" data-value="gen">Gen</button>
                   <button class="seg-btn" data-value="ref">Ref</button>
@@ -502,11 +441,11 @@
           </div>
         </section>
 
-        <!-- RL Training Section -->
+        <!-- Workload / Training Section -->
         <section class="accordion-section" data-section="rl">
           <button class="accordion-trigger" aria-expanded="false">
             <span class="accordion-dot dot-default"></span>
-            <span class="accordion-title">RL Training</span>
+            <span class="accordion-title" id="rl-section-title">RL Training</span>
             <span class="accordion-summary" id="rl-summary">10k prompts &middot; grp=8 &middot; separate &middot; ref model</span>
             <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
           </button>
@@ -514,14 +453,14 @@
             <div class="accordion-content">
 
               <!-- Data -->
-              <fieldset class="field-group">
+              <fieldset class="field-group" data-scn="pretraining post_training">
                 <legend class="field-label">Data</legend>
                 <div class="field-grid cols-2">
-                  <div class="field">
+                  <div class="field" data-scn="post_training">
                     <label class="field-label" for="group-size">Group Size</label>
                     <input class="field-input" type="number" id="group-size" value="8" min="1">
                   </div>
-                  <div class="field">
+                  <div class="field" data-scn="pretraining post_training">
                     <label class="field-label" for="train-batch-size">Train Batch</label>
                     <input class="field-input" type="number" id="train-batch-size" value="36" min="1">
                   </div>
@@ -557,23 +496,33 @@
               <fieldset class="field-group">
                 <legend class="field-label">Batch Settings</legend>
                 <div class="field-grid cols-3">
-                  <div class="field">
+                  <div class="field" data-scn="pretraining post_training">
                     <label class="field-label" for="train-mbs">Train MBS</label>
                     <input class="field-input" type="number" id="train-mbs" value="4" min="1">
                   </div>
-                  <div class="field">
+                  <div class="field" data-scn="pretraining post_training">
                     <label class="field-label" for="grad-accum">Grad Accum</label>
                     <input class="field-input" type="number" id="grad-accum" value="1" min="1">
                   </div>
-                  <div class="field">
+                  <div class="field" data-scn="inference post_training">
                     <label class="field-label" for="gen-batch-size">Gen Batch</label>
                     <input class="field-input" type="number" id="gen-batch-size" value="64" min="1">
                   </div>
                 </div>
               </fieldset>
 
-              <!-- Deployment -->
-              <fieldset class="field-group">
+              <!-- Speculative Decoding (inference + post-training) -->
+              <fieldset class="field-group" data-scn="inference post_training">
+                <legend class="field-label">Decoding</legend>
+                <div class="field">
+                  <label class="field-label field-label-inline">
+                    <input type="checkbox" id="spec-decode"> Speculative Decoding
+                  </label>
+                </div>
+              </fieldset>
+
+              <!-- Deployment (post-training only) -->
+              <fieldset class="field-group" data-scn="post_training">
                 <legend class="field-label">Deployment</legend>
                 <div class="field-grid cols-2">
                   <div class="field">
@@ -589,17 +538,10 @@
                     </label>
                   </div>
                 </div>
-                <div class="field-grid cols-2">
-                  <div class="field">
-                    <label class="field-label field-label-inline">
-                      <input type="checkbox" id="ref-offload"> Ref Offload CPU
-                    </label>
-                  </div>
-                  <div class="field">
-                    <label class="field-label field-label-inline">
-                      <input type="checkbox" id="spec-decode"> Speculative Decoding
-                    </label>
-                  </div>
+                <div class="field">
+                  <label class="field-label field-label-inline">
+                    <input type="checkbox" id="ref-offload"> Ref Offload CPU
+                  </label>
                 </div>
               </fieldset>
 
@@ -616,7 +558,7 @@
         </section>
 
         <!-- Search Section -->
-        <section class="accordion-section" data-section="search">
+        <section class="accordion-section" data-section="search" data-scn="post_training">
           <button class="accordion-trigger" aria-expanded="false">
             <span class="accordion-dot dot-default"></span>
             <span class="accordion-title">Search</span>
@@ -749,7 +691,7 @@
           <button class="chart-tab active" data-tab="timeline">Timeline</button>
           <button class="chart-tab" data-tab="memory">Memory</button>
           <button class="chart-tab" data-tab="topology">Topology</button>
-          <button class="chart-tab" data-tab="search-results">Search Results</button>
+          <button class="chart-tab" data-tab="search-results" data-scn="post_training">Search Results</button>
         </div>
 
         <!-- Chart panels -->

@@ -5,15 +5,15 @@ Tests are written FIRST following TDD: RED → GREEN → REFACTOR.
 
 import pytest
 
-from rl_perf.config import (
+from llm_perf.config import (
     HardwareConfig,
     LayerConfig,
     ModelConfig,
     ParallelismConfig,
-    RLConfig,
+    WorkloadConfig,
 )
-from rl_perf.model import RLPerformanceModel
-from rl_perf.search import SearchResult, pareto_search, sensitivity_sweep
+from llm_perf.model import LLMPerformanceModel
+from llm_perf.search import SearchResult, pareto_search, sensitivity_sweep
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ def test_hw_cfg():
 @pytest.fixture
 def small_rl_cfg():
     """Small RL config for quick iteration."""
-    return RLConfig(
+    return WorkloadConfig(
         total_prompts=64,
         group_size=4,
         avg_prompt_len=256,
@@ -72,7 +72,7 @@ def small_rl_cfg():
 
 @pytest.fixture
 def perf_model(small_model_cfg, test_hw_cfg):
-    return RLPerformanceModel(small_model_cfg, test_hw_cfg)
+    return LLMPerformanceModel(small_model_cfg, test_hw_cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -85,11 +85,12 @@ class TestSearchResultDataclass:
         """SearchResult must have all required fields."""
         gen_par = ParallelismConfig(tp=1, pp=1, dp=8)
         train_par = ParallelismConfig(tp=1, pp=1, dp=8)
-        report = perf_model.derive_targets(8, small_rl_cfg, gen_par, train_par)
+        report = perf_model.derive_targets(8, small_rl_cfg, gen_par, train_par, train_par)
         result = SearchResult(
             devices=8,
             gen_parallel=gen_par,
             train_parallel=train_par,
+            ref_parallel=train_par,
             report=report,
             is_feasible=report.feasible,
             is_oom=not (report.memory.train_feasible and report.memory.gen_feasible),
@@ -97,6 +98,7 @@ class TestSearchResultDataclass:
         assert hasattr(result, "devices")
         assert hasattr(result, "gen_parallel")
         assert hasattr(result, "train_parallel")
+        assert hasattr(result, "ref_parallel")
         assert hasattr(result, "report")
         assert hasattr(result, "is_feasible")
         assert hasattr(result, "is_oom")
@@ -106,11 +108,12 @@ class TestSearchResultDataclass:
         """is_pareto should default to False."""
         gen_par = ParallelismConfig(tp=1, pp=1, dp=8)
         train_par = ParallelismConfig(tp=1, pp=1, dp=8)
-        report = perf_model.derive_targets(8, small_rl_cfg, gen_par, train_par)
+        report = perf_model.derive_targets(8, small_rl_cfg, gen_par, train_par, train_par)
         result = SearchResult(
             devices=8,
             gen_parallel=gen_par,
             train_parallel=train_par,
+            ref_parallel=train_par,
             report=report,
             is_feasible=report.feasible,
             is_oom=not (report.memory.train_feasible and report.memory.gen_feasible),
@@ -167,14 +170,14 @@ class TestParetoSearch:
                     continue
                 # b should not strictly dominate a
                 b_better_devices = b.devices <= a.devices
-                b_better_time = b.report.epoch_time_hours <= a.report.epoch_time_hours
+                b_better_time = b.report.step_time_seconds <= a.report.step_time_seconds
                 b_strictly_better = (
                     b.devices < a.devices
-                    or b.report.epoch_time_hours < a.report.epoch_time_hours
+                    or b.report.step_time_seconds < a.report.step_time_seconds
                 )
                 dominated = b_better_devices and b_better_time and b_strictly_better
                 assert not dominated, (
-                    f"Pareto point {a.devices}d/{a.report.epoch_time_hours:.2f}h is dominated by {b.devices}d/{b.report.epoch_time_hours:.2f}h"
+                    f"Pareto point {a.devices}d/{a.report.step_time_seconds:.2f}h is dominated by {b.devices}d/{b.report.step_time_seconds:.2f}h"
                 )
 
     def test_non_pareto_points_are_dominated(
@@ -187,15 +190,15 @@ class TestParetoSearch:
         for nr in non_pareto_feasible:
             dominated = any(
                 p.devices <= nr.devices
-                and p.report.epoch_time_hours <= nr.report.epoch_time_hours
+                and p.report.step_time_seconds <= nr.report.step_time_seconds
                 and (
                     p.devices < nr.devices
-                    or p.report.epoch_time_hours < nr.report.epoch_time_hours
+                    or p.report.step_time_seconds < nr.report.step_time_seconds
                 )
                 for p in pareto
             )
             assert dominated, (
-                f"Non-Pareto point {nr.devices}d/{nr.report.epoch_time_hours:.2f}h not dominated"
+                f"Non-Pareto point {nr.devices}d/{nr.report.step_time_seconds:.2f}h not dominated"
             )
 
     def test_is_oom_flag(self, perf_model, test_hw_cfg, small_rl_cfg):
@@ -293,7 +296,7 @@ class TestSensitivitySweep:
             gen_par,
             train_par,
         )
-        times = [r.report.epoch_time_hours for r in results]
+        times = [r.report.step_time_seconds for r in results]
         # Epoch time should be monotonically non-decreasing with response length
         assert times[0] <= times[1] <= times[2], (
             f"Expected non-decreasing times: {times}"
@@ -333,21 +336,3 @@ class TestSensitivitySweep:
             train_par,
         )
         assert len(results) == 3
-
-    def test_time_budget_none_by_default(self, perf_model, test_hw_cfg, small_rl_cfg):
-        """When time_budget_hours is None, within_budget should always be True."""
-        gen_par = ParallelismConfig(tp=1, pp=1, dp=8)
-        train_par = ParallelismConfig(tp=1, pp=1, dp=8)
-        results = sensitivity_sweep(
-            perf_model,
-            test_hw_cfg,
-            small_rl_cfg,
-            "avg_response_len",
-            [256, 512],
-            8,
-            gen_par,
-            train_par,
-            time_budget_hours=None,
-        )
-        for r in results:
-            assert r.report.within_budget is True

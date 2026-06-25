@@ -10,9 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
-from rl_perf.config import HardwareConfig, ParallelismConfig, RLConfig
-from rl_perf.model import RLPerformanceModel
-from rl_perf.report import TargetReport
+from llm_perf.config import HardwareConfig, ParallelismConfig, WorkloadConfig
+from llm_perf.model import LLMPerformanceModel
+from llm_perf.report import TargetReport
 
 
 @dataclass
@@ -41,7 +41,7 @@ class SearchResult:
     is_pareto: bool = False
 
 
-def _is_moe_model(model: RLPerformanceModel) -> bool:
+def _is_moe_model(model: LLMPerformanceModel) -> bool:
     """Return True if any layer in the model uses MoE FFN."""
     for layer in model.model.get_layers():
         if layer.ffn == "MoE":
@@ -86,18 +86,18 @@ def _enumerate_parallelism(
 
 
 def pareto_search(
-    model: RLPerformanceModel,
+    model: LLMPerformanceModel,
     hw: HardwareConfig,
-    rl_cfg: RLConfig,
+    rl_cfg: WorkloadConfig,
     device_counts: List[int],
 ) -> List[SearchResult]:
     """Enumerate valid TP/PP/EP/DP/CP combos for each device count, run prediction,
     and mark the Pareto frontier (fewer devices AND lower step time).
 
     Args:
-        model: RLPerformanceModel instance.
+        model: LLMPerformanceModel instance.
         hw: HardwareConfig for the target hardware.
-        rl_cfg: RLConfig describing the RL workload.
+        rl_cfg: WorkloadConfig describing the RL workload.
         device_counts: List of total device counts to evaluate.
 
     Returns:
@@ -175,9 +175,9 @@ def pareto_search(
 
 
 def sensitivity_sweep(
-    model: RLPerformanceModel,
+    model: LLMPerformanceModel,
     hw: HardwareConfig,
-    rl_cfg: RLConfig,
+    rl_cfg: WorkloadConfig,
     param_name: str,
     values: List,
     total_devices: int,
@@ -185,16 +185,16 @@ def sensitivity_sweep(
     train_parallel: ParallelismConfig,
     ref_parallel: Optional[ParallelismConfig] = None,
 ) -> List[SearchResult]:
-    """Sweep a single RLConfig parameter across a list of values and collect results.
+    """Sweep a single WorkloadConfig parameter across a list of values and collect results.
 
     For each value, creates a modified rl_cfg via model_copy(update={param_name: value})
     and calls derive_targets() with the provided parallelism configs.
 
     Args:
-        model: RLPerformanceModel instance.
+        model: LLMPerformanceModel instance.
         hw: HardwareConfig (kept for API symmetry; not used directly here).
-        rl_cfg: Base RLConfig to modify.
-        param_name: Name of the RLConfig field to sweep.
+        rl_cfg: Base WorkloadConfig to modify.
+        param_name: Name of the WorkloadConfig field to sweep.
         values: Ordered list of values to sweep over.
         total_devices: Total device count to pass to derive_targets().
         gen_parallel: ParallelismConfig for the generation phase.

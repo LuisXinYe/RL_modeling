@@ -1,12 +1,12 @@
 # Result Interpretation Guide
 
-This document explains how to read and act on the output of `rl-perf`.
+This document explains how to read and act on the output of `llm-perf`.
 
 ---
 
 ## TargetReport Fields
 
-The main output of `RLPerformanceModel.derive_targets()` is a `TargetReport` (defined in `src/rl_perf/report.py`).
+The main output of `LLMPerformanceModel.derive_targets()` is a `TargetReport` (defined in `src/llm_perf/report.py`).
 
 | Field | Type | Unit | Description |
 |-------|------|------|-------------|
@@ -140,7 +140,7 @@ Examples:
 
 ```
 ============================================================
-          RL Training Performance Report
+          LLM Performance Report
 ============================================================
  Epoch time:        2.45 hours  [FEASIBLE]
  Bottleneck:        GENERATION (slack: 23.5%)

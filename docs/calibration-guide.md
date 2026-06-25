@@ -1,6 +1,6 @@
 # Calibration Guide
 
-rl-perf uses a roofline-based cost model. Calibration coefficients bridge the gap between theoretical peak performance and what the hardware actually achieves. This guide explains each coefficient, how to measure it, and when to update.
+llm-perf uses a roofline-based cost model. Calibration coefficients bridge the gap between theoretical peak performance and what the hardware actually achieves. This guide explains each coefficient, how to measure it, and when to update.
 
 ---
 
@@ -157,4 +157,4 @@ calibration:
   comm_efficiency: <measured>
 ```
 
-If you do not have benchmark infrastructure, the defaults (50% compute, 70% memory/comm) are deliberately conservative. Your actual hardware will likely perform better, meaning rl-perf predictions will be pessimistic (overestimate time, underestimate throughput). This is generally safer than optimistic predictions.
+If you do not have benchmark infrastructure, the defaults (50% compute, 70% memory/comm) are deliberately conservative. Your actual hardware will likely perform better, meaning llm-perf predictions will be pessimistic (overestimate time, underestimate throughput). This is generally safer than optimistic predictions.

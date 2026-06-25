@@ -1,0 +1,14 @@
+name: "CloudMatrix 384 Fullmesh"
+description: "CloudMatrix 384 super-node — ultra-high-bandwidth fullmesh interconnect"
+devices_per_node: 384
+tiers:
+  - name: intra_node
+    type: fullmesh
+    size: 384
+    bandwidth_gb_s: 800
+    latency_us: 2
+  - name: inter_node
+    type: fattree
+    size: 9999999999
+    bandwidth_gb_s: 400
+    latency_us: 2

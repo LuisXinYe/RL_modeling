@@ -1,4 +1,4 @@
-# RL Performance Modeling — Phase 2 Implementation Plan
+# LLM Performance Modeling — Phase 2 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,14 +8,14 @@
 
 **Tech Stack:** Python 3.10+, pydantic, pyyaml, pytest
 
-**Spec:** `docs/superpowers/specs/2026-03-25-rl-perf-phase2-design.md`
+**Spec:** `docs/superpowers/specs/2026-03-25-llm-perf-phase2-design.md`
 
 ---
 
 ## Task 1: New Operators — op_mtp_head + op_ring_cp (ops.py)
 
 **Files:**
-- Modify: `src/rl_perf/ops.py` (append two new functions)
+- Modify: `src/llm_perf/ops.py` (append two new functions)
 - Modify: `tests/test_ops.py` (append new tests)
 
 - [ ] **Step 1: Write failing tests for op_mtp_head**
@@ -23,7 +23,7 @@
 Append to `tests/test_ops.py`:
 
 ```python
-from rl_perf.ops import op_mtp_head, op_ring_cp
+from llm_perf.ops import op_mtp_head, op_ring_cp
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +76,7 @@ Expected: FAIL (ImportError: cannot import name 'op_mtp_head')
 
 - [ ] **Step 3: Implement op_mtp_head in ops.py**
 
-Append to `src/rl_perf/ops.py` before the communication section:
+Append to `src/llm_perf/ops.py` before the communication section:
 
 ```python
 def op_mtp_head(
@@ -148,7 +148,7 @@ Expected: FAIL (ImportError)
 
 - [ ] **Step 7: Implement op_ring_cp in ops.py**
 
-Append to `src/rl_perf/ops.py` in the communication section:
+Append to `src/llm_perf/ops.py` in the communication section:
 
 ```python
 def op_ring_cp(
@@ -175,16 +175,16 @@ Expected: all PASS
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/rl_perf/ops.py tests/test_ops.py
+git add src/llm_perf/ops.py tests/test_ops.py
 git commit -m "feat(ops): add op_mtp_head and op_ring_cp operators"
 ```
 
 ---
 
-## Task 2: Config — RLConfig New Fields (config.py)
+## Task 2: Config — WorkloadConfig New Fields (config.py)
 
 **Files:**
-- Modify: `src/rl_perf/config.py:88-104` (RLConfig class)
+- Modify: `src/llm_perf/config.py:88-104` (WorkloadConfig class)
 - Modify: `tests/test_config.py`
 
 - [ ] **Step 1: Write failing test**
@@ -193,13 +193,13 @@ Append to `tests/test_config.py`:
 
 ```python
 def test_rlconfig_speculative_decoding_defaults():
-    cfg = RLConfig(total_prompts=1000)
+    cfg = WorkloadConfig(total_prompts=1000)
     assert cfg.use_speculative_decoding is False
     assert cfg.mtp_acceptance_len is None
 
 
 def test_rlconfig_speculative_decoding_set():
-    cfg = RLConfig(total_prompts=1000, use_speculative_decoding=True, mtp_acceptance_len=3)
+    cfg = WorkloadConfig(total_prompts=1000, use_speculative_decoding=True, mtp_acceptance_len=3)
     assert cfg.use_speculative_decoding is True
     assert cfg.mtp_acceptance_len == 3
 ```
@@ -212,9 +212,9 @@ pytest tests/test_config.py::test_rlconfig_speculative_decoding_defaults -v
 
 Expected: FAIL (validation error — unknown field)
 
-- [ ] **Step 3: Add fields to RLConfig**
+- [ ] **Step 3: Add fields to WorkloadConfig**
 
-In `src/rl_perf/config.py`, add to `RLConfig` class after `colocated`:
+In `src/llm_perf/config.py`, add to `WorkloadConfig` class after `colocated`:
 
 ```python
     use_speculative_decoding: bool = False
@@ -232,8 +232,8 @@ Expected: all PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/rl_perf/config.py tests/test_config.py
-git commit -m "feat(config): add speculative decoding fields to RLConfig"
+git add src/llm_perf/config.py tests/test_config.py
+git commit -m "feat(config): add speculative decoding fields to WorkloadConfig"
 ```
 
 ---
@@ -241,7 +241,7 @@ git commit -m "feat(config): add speculative decoding fields to RLConfig"
 ## Task 3: Builder — SP AllReduce Replacement (builder.py)
 
 **Files:**
-- Modify: `src/rl_perf/builder.py:44-68` (_build_tp_allreduce → generalize), `builder.py:74-319` (build_layer_ops)
+- Modify: `src/llm_perf/builder.py:44-68` (_build_tp_allreduce → generalize), `builder.py:74-319` (build_layer_ops)
 - Modify: `tests/test_builder.py`
 
 - [ ] **Step 1: Write failing tests for SP**
@@ -452,7 +452,7 @@ Expected: all PASS (existing tests unaffected — they use sp=False by default)
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/rl_perf/builder.py tests/test_builder.py
+git add src/llm_perf/builder.py tests/test_builder.py
 git commit -m "feat(builder): SP AllGather + ReduceScatter replacing AllReduce when sp=True"
 ```
 
@@ -461,7 +461,7 @@ git commit -m "feat(builder): SP AllGather + ReduceScatter replacing AllReduce w
 ## Task 4: Builder — CP Ring Communication (builder.py)
 
 **Files:**
-- Modify: `src/rl_perf/builder.py` (build_layer_ops)
+- Modify: `src/llm_perf/builder.py` (build_layer_ops)
 - Modify: `tests/test_builder.py`
 
 - [ ] **Step 1: Write failing tests for CP**
@@ -581,7 +581,7 @@ Expected: all PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/rl_perf/builder.py tests/test_builder.py
+git add src/llm_perf/builder.py tests/test_builder.py
 git commit -m "feat(builder): Ring CP communication for cp > 1"
 ```
 
@@ -590,7 +590,7 @@ git commit -m "feat(builder): Ring CP communication for cp > 1"
 ## Task 5: Builder — MTP Head Insertion (builder.py)
 
 **Files:**
-- Modify: `src/rl_perf/builder.py` (build_training_step)
+- Modify: `src/llm_perf/builder.py` (build_training_step)
 - Modify: `tests/test_builder.py`
 
 - [ ] **Step 1: Write failing tests for MTP in builder**
@@ -706,7 +706,7 @@ Expected: all PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/rl_perf/builder.py tests/test_builder.py
+git add src/llm_perf/builder.py tests/test_builder.py
 git commit -m "feat(builder): MTP head ops in training forward/backward"
 ```
 
@@ -714,10 +714,10 @@ git commit -m "feat(builder): MTP head ops in training forward/backward"
 
 ## Task 6: Pipeline — Return SimResult + Startup Fix + Speculative Decoding (pipeline.py)
 
-**Depends on:** Task 1 (op_mtp_head) and Task 2 (RLConfig fields) — must be completed first.
+**Depends on:** Task 1 (op_mtp_head) and Task 2 (WorkloadConfig fields) — must be completed first.
 
 **Files:**
-- Modify: `src/rl_perf/pipeline.py`
+- Modify: `src/llm_perf/pipeline.py`
 - Modify: `tests/test_pipeline.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -725,7 +725,7 @@ git commit -m "feat(builder): MTP head ops in training forward/backward"
 Append to `tests/test_pipeline.py`:
 
 ```python
-from rl_perf.simulator import SimResult
+from llm_perf.simulator import SimResult
 
 
 def test_generation_time_returns_tuple(model_cfg, hw, parallel_cfg, rl_cfg):
@@ -754,8 +754,8 @@ def test_training_time_returns_tuple(model_cfg, hw, parallel_cfg, rl_cfg):
 def test_startup_overhead_includes_decode(model_cfg, hw, parallel_cfg, rl_cfg):
     """t_per_batch should be > prefill-only time."""
     _, sim, t_per_batch = generation_time(model_cfg, hw, parallel_cfg, rl_cfg)
-    from rl_perf.builder import build_generation_step
-    from rl_perf.simulator import simulate
+    from llm_perf.builder import build_generation_step
+    from llm_perf.simulator import simulate
     prefill_ops, _ = build_generation_step(model_cfg, hw, parallel_cfg, rl_cfg)
     t_prefill = simulate(prefill_ops).wall_clock_time
     assert t_per_batch > t_prefill  # includes decode portion
@@ -771,10 +771,10 @@ Expected: FAIL (returns float, not tuple)
 
 - [ ] **Step 3: Modify generation_time to return 3-tuple**
 
-First, add `Phase` to the import in `src/rl_perf/pipeline.py`:
+First, add `Phase` to the import in `src/llm_perf/pipeline.py`:
 
 ```python
-from rl_perf.config import ModelConfig, HardwareConfig, ParallelismConfig, RLConfig, Phase
+from llm_perf.config import ModelConfig, HardwareConfig, ParallelismConfig, WorkloadConfig, Phase
 ```
 
 Then change `generation_time`:
@@ -802,7 +802,7 @@ def generation_time(model_cfg, hw, parallel_cfg, rl_cfg):
         mtp_depth = (model_cfg.auxiliary or {}).get("mtp_depth", 0)
         if mtp_depth > 0:
             acceptance_len = rl_cfg.mtp_acceptance_len or mtp_depth
-            from rl_perf import ops
+            from llm_perf import ops
             draft_cost = ops.op_mtp_head(
                 model_cfg.hidden_size, model_cfg.vocab_size, mtp_depth,
                 batch_tokens=rl_cfg.gen_batch_size,
@@ -866,7 +866,7 @@ Expected: all PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/rl_perf/pipeline.py tests/test_pipeline.py
+git add src/llm_perf/pipeline.py tests/test_pipeline.py
 git commit -m "feat(pipeline): return SimResult, fix startup_overhead, add speculative decoding"
 ```
 
@@ -875,7 +875,7 @@ git commit -m "feat(pipeline): return SimResult, fix startup_overhead, add specu
 ## Task 7: Model API — Memory Refactor + what_if + sensitivity (model.py)
 
 **Files:**
-- Modify: `src/rl_perf/model.py`
+- Modify: `src/llm_perf/model.py`
 - Modify: `tests/test_model.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -920,7 +920,7 @@ def test_sensitivity(perf_model, rl_cfg):
 def test_sensitivity_invalid_param(perf_model, rl_cfg):
     gen_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
     train_p = ParallelismConfig(tp=8, pp=1, dp=8, ep=1)
-    with pytest.raises(ValueError, match="Unknown RLConfig field"):
+    with pytest.raises(ValueError, match="Unknown WorkloadConfig field"):
         perf_model.sensitivity(
             rl_cfg=rl_cfg, param_name="nonexistent_field", values=[1, 2],
             total_devices=64, gen_parallel=gen_p, train_parallel=train_p,
@@ -929,15 +929,15 @@ def test_sensitivity_invalid_param(perf_model, rl_cfg):
 
 def test_weight_bytes_no_double_count():
     """Verify builder zeroes weight_bytes on BWD ops so SimResult doesn't double-count."""
-    from rl_perf.config import load_model_config, load_hardware_config
-    from rl_perf.builder import build_training_step
-    from rl_perf.simulator import simulate
+    from llm_perf.config import load_model_config, load_hardware_config
+    from llm_perf.builder import build_training_step
+    from llm_perf.simulator import simulate
     from pathlib import Path
 
     CONFIGS_DIR = Path(__file__).parent.parent / "configs"
     mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
     hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
-    rl = RLConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
+    rl = WorkloadConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
     parallel = ParallelismConfig(tp=1, pp=1, dp=1, ep=1)
 
     ops = build_training_step(mc, hw, parallel, rl)
@@ -961,17 +961,17 @@ Expected: FAIL (no method 'what_if')
 
 - [ ] **Step 3: Rewrite model.py — derive_targets + memory refactor**
 
-Replace `derive_targets`, `feasibility_check`, and `_compute_memory` in `src/rl_perf/model.py`:
+Replace `derive_targets`, `feasibility_check`, and `_compute_memory` in `src/llm_perf/model.py`:
 
 ```python
 import math
-from rl_perf.config import ModelConfig, HardwareConfig, ParallelismConfig, RLConfig
-from rl_perf.pipeline import generation_time, training_time, epoch_time, bottleneck_analysis
-from rl_perf.simulator import SimResult
-from rl_perf.report import TargetReport, MemoryProfile
+from llm_perf.config import ModelConfig, HardwareConfig, ParallelismConfig, WorkloadConfig
+from llm_perf.pipeline import generation_time, training_time, epoch_time, bottleneck_analysis
+from llm_perf.simulator import SimResult
+from llm_perf.report import TargetReport, MemoryProfile
 
 
-class RLPerformanceModel:
+class LLMPerformanceModel:
     def __init__(self, model_cfg: ModelConfig, hw_cfg: HardwareConfig):
         self.model = model_cfg
         self.hw = hw_cfg
@@ -1018,14 +1018,14 @@ class RLPerformanceModel:
     def what_if(self, base_config: dict, overrides: dict,
                 total_devices, gen_parallel, train_parallel, time_budget_hours=None) -> TargetReport:
         """base_config + overrides → TargetReport for comparison."""
-        rl_cfg = RLConfig(**{**base_config, **overrides})
+        rl_cfg = WorkloadConfig(**{**base_config, **overrides})
         return self.derive_targets(total_devices, rl_cfg, gen_parallel, train_parallel, time_budget_hours)
 
-    def sensitivity(self, rl_cfg: RLConfig, param_name: str, values: list,
+    def sensitivity(self, rl_cfg: WorkloadConfig, param_name: str, values: list,
                     total_devices, gen_parallel, train_parallel) -> list:
         """Sweep one parameter across values."""
-        if param_name not in RLConfig.model_fields:
-            raise ValueError(f"Unknown RLConfig field: {param_name}")
+        if param_name not in WorkloadConfig.model_fields:
+            raise ValueError(f"Unknown WorkloadConfig field: {param_name}")
         results = []
         for v in values:
             cfg = rl_cfg.model_copy(update={param_name: v})
@@ -1092,7 +1092,7 @@ Expected: all PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/rl_perf/model.py tests/test_model.py
+git add src/llm_perf/model.py tests/test_model.py
 git commit -m "feat(model): memory from SimResult, what_if, sensitivity query API"
 ```
 
@@ -1101,7 +1101,7 @@ git commit -m "feat(model): memory from SimResult, what_if, sensitivity query AP
 ## Task 8: Report — format_json (report.py)
 
 **Files:**
-- Modify: `src/rl_perf/report.py`
+- Modify: `src/llm_perf/report.py`
 - Modify: `tests/test_model.py` (add JSON test)
 
 - [ ] **Step 1: Write failing test**
@@ -1110,7 +1110,7 @@ Append to `tests/test_model.py`:
 
 ```python
 import json
-from rl_perf.report import format_json
+from llm_perf.report import format_json
 
 
 def test_format_json(perf_model, rl_cfg):
@@ -1135,7 +1135,7 @@ Expected: FAIL (ImportError)
 
 - [ ] **Step 3: Implement format_json**
 
-Add to `src/rl_perf/report.py`:
+Add to `src/llm_perf/report.py`:
 
 ```python
 import json
@@ -1158,7 +1158,7 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/rl_perf/report.py tests/test_model.py
+git add src/llm_perf/report.py tests/test_model.py
 git commit -m "feat(report): add format_json for TargetReport serialization"
 ```
 
@@ -1179,7 +1179,7 @@ def test_e2e_deepseekv3_with_mtp(rl_cfg):
     mc = load_model_config(str(CONFIGS_DIR / "models" / "deepseekv3_671b.yaml"))
     hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
 
-    perf = RLPerformanceModel(mc, hw)
+    perf = LLMPerformanceModel(mc, hw)
     gen_p = ParallelismConfig(tp=8, pp=1, dp=48, ep=1)
     train_p = ParallelismConfig(tp=8, pp=4, dp=4, ep=8)
 
@@ -1193,7 +1193,7 @@ def test_e2e_deepseekv3_with_mtp(rl_cfg):
 
     # MTP should increase training time vs no-mtp
     mc_no_mtp = mc.model_copy(update={"auxiliary": None})
-    perf_no_mtp = RLPerformanceModel(mc_no_mtp, hw)
+    perf_no_mtp = LLMPerformanceModel(mc_no_mtp, hw)
     report_no_mtp = perf_no_mtp.derive_targets(
         total_devices=8*4*4*8, rl_cfg=rl_cfg,
         gen_parallel=gen_p, train_parallel=train_p,
@@ -1209,7 +1209,7 @@ def test_e2e_sp_cp_config(rl_cfg):
     mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
     hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
 
-    perf = RLPerformanceModel(mc, hw)
+    perf = LLMPerformanceModel(mc, hw)
     # SP enabled with TP
     gen_p = ParallelismConfig(tp=8, pp=1, dp=8, sp=True)
     train_p = ParallelismConfig(tp=8, pp=1, dp=8, sp=True)
@@ -1244,7 +1244,7 @@ git commit -m "test: Phase 2 e2e tests for MTP, SP, CP configurations"
 | Task | What | Files | Est. |
 |------|------|-------|------|
 | 1 | op_mtp_head + op_ring_cp | ops.py, test_ops.py | 10 min |
-| 2 | RLConfig new fields | config.py, test_config.py | 5 min |
+| 2 | WorkloadConfig new fields | config.py, test_config.py | 5 min |
 | 3 | SP AllGather/ReduceScatter | builder.py, test_builder.py | 15 min |
 | 4 | CP Ring communication | builder.py, test_builder.py | 10 min |
 | 5 | MTP head in builder | builder.py, test_builder.py | 10 min |

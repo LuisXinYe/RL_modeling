@@ -1,12 +1,12 @@
 """HuggingFace config.json → ModelConfig converter.
 
 Supports importing model architectures from HuggingFace Hub and converting
-their configuration dictionaries into rl_perf ModelConfig objects.
+their configuration dictionaries into llm_perf ModelConfig objects.
 """
 
 from __future__ import annotations
 
-from rl_perf.config import LayerConfig, ModelConfig
+from llm_perf.config import LayerConfig, ModelConfig
 
 SUPPORTED_ARCHITECTURES: list[str] = [
     "LlamaForCausalLM",

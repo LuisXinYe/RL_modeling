@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from rl_perf.config import HardwareConfig, Phase
+from llm_perf.config import HardwareConfig, Phase
 
 
 @dataclass
@@ -190,6 +190,12 @@ def op_gqa_attention(
         weight_b + batch_tokens * d * dtype_bytes + batch_tokens * d_qo * dtype_bytes
     )
 
+    # KV cache read: during decode each query reads all L past K,V pairs from the
+    # cache (K + V, each d_kv per token). This dominates decode memory traffic for
+    # long contexts and makes decode time scale with batch and context length.
+    if phase == Phase.DECODE:
+        mem_rw += batch * L * 2 * d_kv * dtype_bytes
+
     # Output activation kept for backward
     if phase == Phase.TRAIN_FWD:
         output_b = batch_tokens * d * dtype_bytes
@@ -280,6 +286,10 @@ def op_swa_attention(
         weight_b + batch_tokens * d * dtype_bytes + batch_tokens * d_qo * dtype_bytes
     )
 
+    # KV cache read during decode (bounded by the sliding window via L above).
+    if phase == Phase.DECODE:
+        mem_rw += batch * L * 2 * d_kv * dtype_bytes
+
     if phase == Phase.TRAIN_FWD:
         output_b = batch_tokens * d * dtype_bytes
     else:
@@ -365,6 +375,11 @@ def op_mla_attention(
 
     mem_rw = weight_b + query_tokens * d * dtype_bytes + query_tokens * d * dtype_bytes
 
+    # KV cache read during decode: MLA caches a single compressed latent (d_c)
+    # plus the RoPE key (r) per token — read once to reconstruct K and V.
+    if phase == Phase.DECODE:
+        mem_rw += batch * L * (d_c + r) * dtype_bytes
+
     if phase == Phase.TRAIN_FWD:
         output_b = query_tokens * d * dtype_bytes
     else:
@@ -376,6 +391,232 @@ def op_mla_attention(
         weight_bytes=weight_b,
         output_bytes=output_b,
     )
+
+
+def op_dsa_attention(
+    hidden_size: int,
+    num_heads: int,
+    head_dim: int,
+    q_lora_rank: int,
+    o_lora_rank: int,
+    o_groups: int,
+    compress_ratio: int,
+    compress_c_kv: int,
+    compress_coeff: float,
+    index_n_heads: int,
+    index_head_dim: int,
+    index_topk: int,
+    window_size: int,
+    batch: int,
+    seq_len: int,
+    phase: Phase,
+    kv_len: int | None = None,
+    dtype_bytes: int = 2,
+) -> OpCost:
+    """DSA (DeepSeek Sparse Attention) operator cost model.
+
+    Comprises three sub-ops: KV Compression, Lightning Index (C4A only),
+    and Compressed Attention, plus projection FLOPs.
+
+    Args:
+        hidden_size: Model hidden dimension (d).
+        num_heads: Number of query heads (TP-partitioned).
+        head_dim: Dimension per attention head.
+        q_lora_rank: Q LoRA rank (qlr).
+        o_lora_rank: O LoRA rank (olr).
+        o_groups: O projection block-diagonal groups.
+        compress_ratio: KV compression ratio: 4 (C4A), 128 (C128A), 0 (non-DSA).
+        compress_c_kv: Compressed KV dimension.
+        compress_coeff: Compression cost coefficient: 1.0 (C4A), 0.5 (C128A).
+        index_n_heads: Lightning Index head count.
+        index_head_dim: Lightning Index head dimension.
+        index_topk: Top-K compressed KV entries for attention.
+        window_size: Sliding window size for SWA component.
+        batch: Batch size.
+        seq_len: Sequence length.
+        phase: Execution phase.
+        kv_len: KV cache length for decode.
+        dtype_bytes: Bytes per element.
+    """
+    H = hidden_size
+    Nq = num_heads
+    d_h = head_dim
+    qlr = q_lora_rank
+    olr = o_lora_rank
+    g = o_groups
+    c_kv = compress_c_kv
+    coeff = compress_coeff
+    idx_nh = index_n_heads
+    idx_hd = index_head_dim
+    topk = index_topk
+    W = window_size
+    use_index = compress_ratio == 4  # Lightning Index only for C4A
+
+    if phase == Phase.DECODE:
+        L = kv_len if kv_len is not None else seq_len
+        query_tokens = batch
+    else:
+        L = seq_len
+        query_tokens = batch * seq_len
+
+    S = seq_len  # for prefill/train, this is the full sequence
+    S_comp = S // compress_ratio if compress_ratio > 0 else S
+
+    # ---- 1. Projection FLOPs (all phases) ----
+    # Q down: d -> qlr
+    proj_flops = 2 * H * qlr * query_tokens
+    # Q up: qlr -> Nq*d_h
+    proj_flops += 2 * qlr * (Nq * d_h) * query_tokens
+    # KV proj (MQA): d -> d_h (single KV head)
+    kv_dim = d_h  # MQA
+    proj_flops += 2 * H * kv_dim * query_tokens
+    # O proj_a: Nq*d_h -> olr
+    proj_flops += 2 * (Nq * d_h) * olr * query_tokens
+    # O proj_b: Ng*olr -> d
+    Ng = max(1, Nq // g)  # heads per group
+    proj_flops += 2 * (Ng * olr) * H * query_tokens
+
+    # ---- 2. KV Compression FLOPs ----
+    comp_flops = 0.0
+    if compress_ratio > 0 and c_kv > 0 and coeff > 0:
+        if phase in (Phase.PREFILL, Phase.TRAIN_FWD, Phase.TRAIN_BWD):
+            # Projection + group compression
+            comp_flops = coeff * (8 * batch * S * H * c_kv + (14 * g - 1) * c_kv * batch * S_comp)
+        elif phase == Phase.DECODE:
+            # Check alignment: decode aligned if kv_len is multiple of compress_ratio
+            aligned = (kv_len is not None and kv_len % compress_ratio == 0)
+            if aligned:
+                comp_flops = coeff * (8 * batch * H * c_kv + (14 * g - 1) * batch * c_kv)
+            else:
+                # Unaligned: only projection, no group compression
+                comp_flops = coeff * 8 * batch * H * c_kv
+
+    # ---- 3. Lightning Index FLOPs (C4A only) ----
+    index_flops = 0.0
+    if use_index and idx_nh > 0 and idx_hd > 0:
+        # IQ projection: qlr -> idx_nh*idx_hd
+        index_flops += 2 * qlr * (idx_nh * idx_hd) * query_tokens
+
+        # Index KV compression (same structure as KV compression, with idx_hd, coeff=1.0)
+        idx_coeff = 1.0
+        if phase in (Phase.PREFILL, Phase.TRAIN_FWD, Phase.TRAIN_BWD):
+            index_flops += idx_coeff * (8 * batch * S * H * idx_hd + (14 * g - 1) * idx_hd * batch * S_comp)
+            # Index score computation for prefill
+            index_flops += (
+                batch * idx_nh * S * S_comp * idx_hd * 2  # QK^T
+                + batch * idx_nh * S * S_comp              # softmax
+                + batch * idx_nh * S * S_comp * 3          # top-k selection
+                + batch * S * S_comp * math.log(max(S, 2))  # argsort overhead
+            )
+        elif phase == Phase.DECODE:
+            aligned = (kv_len is not None and kv_len % compress_ratio == 0)
+            if aligned:
+                S_comp_decode = (kv_len or seq_len) // compress_ratio
+                index_flops += idx_coeff * (8 * batch * H * idx_hd + (14 * g - 1) * batch * idx_hd)
+                # Index score for decode
+                index_flops += (
+                    batch * idx_nh * S_comp_decode * idx_hd * 2  # QK^T
+                    + batch * idx_nh * S_comp_decode              # softmax
+                    + batch * idx_nh * S_comp_decode * 3          # top-k
+                )
+            else:
+                index_flops += idx_coeff * 8 * batch * H * idx_hd
+
+    # ---- 4. SWA Attention FLOPs ----
+    swa_flops = 0.0
+    if W > 0:
+        # SWA uses full KV dim (d_h for MQA)
+        if phase == Phase.DECODE:
+            swa_L = min(L, W)
+            swa_flops = 2 * batch * Nq * 1 * swa_L * kv_dim * 2 * 1.3
+        else:
+            swa_L = min(S, W)
+            swa_flops = 2 * batch * Nq * S * swa_L * kv_dim * 2 * 1.3
+
+    # ---- 5. Compressed Attention FLOPs ----
+    # Only when compress_ratio > 1 (C4A or C128A); ratio=1 means SWA-only
+    ca_flops = 0.0
+    if compress_ratio > 1 and c_kv > 0:
+        n_attend = topk if use_index else S_comp
+        if phase == Phase.DECODE:
+            ca_flops = 2 * batch * Nq * 1 * n_attend * c_kv * 2 * 1.3
+        else:
+            ca_flops = 2 * batch * Nq * S * n_attend * c_kv * 2 * 1.3
+
+    fwd_flops = proj_flops + comp_flops + index_flops + swa_flops + ca_flops
+
+    if phase == Phase.TRAIN_BWD:
+        flops = 2 * fwd_flops
+    else:
+        flops = fwd_flops
+
+    # ---- Weight bytes ----
+    weight_b = (
+        H * qlr                           # Q down
+        + qlr * (Nq * d_h)                # Q up
+        + H * kv_dim                      # KV (MQA)
+        + (Nq * d_h) * olr               # O proj_a
+        + (Ng * olr) * H                  # O proj_b
+    ) * dtype_bytes
+
+    # Index IQ weight (C4A only)
+    if use_index and idx_nh > 0 and idx_hd > 0:
+        weight_b += qlr * idx_nh * idx_hd * dtype_bytes
+
+    mem_rw = weight_b + query_tokens * H * dtype_bytes + query_tokens * H * dtype_bytes
+
+    # KV cache read during decode: SWA window (MQA K+V of dim d_h, bounded by W)
+    # + compressed KV latent (c_kv) + Lightning Index entries (C4A), the
+    # compressed parts read at L/compress_ratio length.
+    if phase == Phase.DECODE:
+        kv_read = batch * min(L, W) * 2 * kv_dim * dtype_bytes if W > 0 else 0.0
+        if compress_ratio > 1 and c_kv > 0:
+            comp_len = L // compress_ratio
+            kv_read += batch * comp_len * c_kv * dtype_bytes
+            if use_index and idx_hd > 0:
+                kv_read += batch * comp_len * idx_hd * dtype_bytes
+        mem_rw += kv_read
+
+    if phase == Phase.TRAIN_FWD:
+        output_b = query_tokens * H * dtype_bytes
+    else:
+        output_b = 0
+
+    return OpCost(
+        flops=flops,
+        mem_rw=mem_rw,
+        weight_bytes=weight_b,
+        output_bytes=output_b,
+    )
+
+
+def op_dsa_index_score_allreduce(
+    batch: int,
+    seq_len: int,
+    compress_ratio: int,
+    index_n_heads: int,
+    index_head_dim: int,
+    phase: Phase,
+    kv_len: int | None = None,
+    dtype_bytes: int = 2,
+) -> OpCost:
+    """Communication cost for Lightning Index score AllReduce (DSA C4A).
+
+    Only produces comm_bytes; compute is handled by op_dsa_attention.
+    """
+    g = compress_ratio
+    if g <= 1 or index_n_heads <= 0:
+        return OpCost()
+
+    if phase in (Phase.PREFILL, Phase.TRAIN_FWD, Phase.TRAIN_BWD):
+        comm_b = batch * seq_len * (seq_len // g) * dtype_bytes
+    elif phase == Phase.DECODE:
+        L = kv_len if kv_len is not None else seq_len
+        comm_b = batch * (L // g) * dtype_bytes
+    else:
+        comm_b = 0
+
+    return OpCost(comm_bytes=comm_b)
 
 
 def op_swiglu_ffn(
@@ -498,20 +739,144 @@ def op_rmsnorm(
     )
 
 
-def op_mhc_residual(
+def op_mhc_pre_fused(
     hidden_size: int,
     expansion: int,
     batch_tokens: int,
     phase: Phase,
     dtype_bytes: int = 2,
 ) -> OpCost:
-    """mHC residual. Memory-bandwidth-bound. Ref: arXiv:2512.24880."""
-    # Small matmul on [expansion, expansion] matrix
-    flops = 2 * hidden_size * expansion * expansion * batch_tokens
-    # Read expanded + write + intermediates: memory-bound
-    mem_rw = batch_tokens * expansion * hidden_size * dtype_bytes * 3
-    # H_res + H_pre + H_post per sublayer
-    weight_b = 3 * expansion * expansion * dtype_bytes
+    """Fused mHC pre + Sinkhorn: single kernel for residual mixing + aggregation.
+
+    Fuses: Sinkhorn normalization of H_res, residual mixing H_res @ x_l,
+    and input aggregation H_pre · x_l into one kernel.
+
+    With fusion, intermediates stay in on-chip SRAM/registers.
+    Only true inputs and outputs traverse HBM.
+
+    Ref: arXiv:2512.24880, DeepSeek V4 perf_model.
+    """
+    n = expansion
+    D = hidden_size
+    T = batch_tokens
+
+    # FLOPs: identical to unfused pre + sinkhorn combined
+    # pre:      2*T*(n²+2n)*n*D + 5*T*n + 2*T*n²  (H_res matmul + H_pre dot)
+    # sinkhorn: T*n² + 40*T*n*(2n-1)               (20 iters × row/col norm)
+    cube_flops = 2 * T * (n**2 + 2 * n) * n * D + 5 * T * n + 2 * T * n**2
+    vec_ops = T * n**2 + 40 * T * n * (2 * n - 1) + 2 * T * n
+    flops = cube_flops + vec_ops
+
+    # Fused HBM traffic: ONLY input read + output writes
+    # BF16 for inference (H_res is doubly stochastic, spectral norm ≤ 1)
+    bpe = dtype_bytes  # 2 for BF16
+    mem_rw = (
+        bpe * T * n * D           # read x_l [T, n, D]
+        + bpe * T * n * D         # write residual [T, n, D]
+        + bpe * T * D             # write sub_input [T, D]
+    )
+
+    # Weights: H_res_logits [n,n] + H_pre_logits [n] (FP32, negligible)
+    weight_b = 4 * (n * n + n)
+
+    if phase == Phase.TRAIN_BWD:
+        flops = 2 * flops
+
+    return OpCost(
+        flops=flops,
+        mem_rw=mem_rw,
+        weight_bytes=weight_b,
+        output_bytes=0,
+    )
+
+
+def op_mhc_post_fused(
+    hidden_size: int,
+    expansion: int,
+    batch_tokens: int,
+    phase: Phase,
+    dtype_bytes: int = 2,
+) -> OpCost:
+    """Fused mHC post: distribute sub-layer output back to n streams + residual add.
+
+    Mathematical operation:
+      x_{l+1}[t, i, :] = residual[t, i, :] + H_post[i] × sub_output[t, :]
+
+    Ref: arXiv:2512.24880, DeepSeek V4 perf_model.
+    """
+    n = expansion
+    D = hidden_size
+    T = batch_tokens
+
+    # FLOPs: same as unfused
+    cube_flops = 2 * T * n**2 * D + 3 * T * n * D
+    vec_ops = 0
+    flops = cube_flops + vec_ops
+
+    # Fused HBM traffic
+    bpe = dtype_bytes
+    mem_rw = (
+        bpe * T * n * D           # read residual [T, n, D]
+        + bpe * T * D             # read sub_output [T, D]
+        + bpe * T * n * D         # write x_{l+1} [T, n, D]
+    )
+
+    weight_b = 4 * n  # H_post_logits [n] (FP32, negligible)
+
+    if phase == Phase.TRAIN_BWD:
+        flops = 2 * flops
+
+    return OpCost(
+        flops=flops,
+        mem_rw=mem_rw,
+        weight_bytes=weight_b,
+        output_bytes=0,
+    )
+
+
+def op_mhc_post_pre_fused(
+    hidden_size: int,
+    expansion: int,
+    batch_tokens: int,
+    phase: Phase,
+    dtype_bytes: int = 2,
+) -> OpCost:
+    """Deep-fused mHC: post(sublayer_k) + sinkhorn(k+1) + pre(sublayer_k+1).
+
+    Fuses across the sublayer boundary (e.g. post_attn → pre_moe),
+    eliminating the intermediate x_{l+0.5} from HBM entirely.
+
+    This is the most important fusion: it saves bpe × T × n × D × 2 bytes
+    (read+write of x_{l+0.5}) compared to separate fused post + fused pre.
+
+    Ref: arXiv:2512.24880, DeepSeek V4 perf_model.
+    """
+    n = expansion
+    D = hidden_size
+    T = batch_tokens
+
+    # FLOPs: sum of post + sinkhorn + pre
+    cube_flops = (
+        (2 * T * n**2 * D + 3 * T * n * D)                    # post
+        + (2 * T * (n**2 + 2 * n) * n * D + 5 * T * n + 2 * T * n**2)  # pre
+    )
+    vec_ops = T * n**2 + 40 * T * n * (2 * n - 1) + 2 * T * n  # sinkhorn + pre
+    flops = cube_flops + vec_ops
+
+    # Deep-fused HBM traffic: x_{l+0.5} never written to HBM
+    bpe = dtype_bytes
+    mem_rw = (
+        bpe * T * n * D           # read residual_k [T, n, D]
+        + bpe * T * D             # read sub_output_k [T, D]
+        + bpe * T * n * D         # write residual_{k+1} [T, n, D]
+        + bpe * T * D             # write sub_input_{k+1} [T, D]
+    )
+
+    # Weights: H_res + H_pre + H_post for both sublayers (FP32, negligible)
+    weight_b = 4 * (n * n + 2 * n)
+
+    if phase == Phase.TRAIN_BWD:
+        flops = 2 * flops
 
     return OpCost(
         flops=flops,

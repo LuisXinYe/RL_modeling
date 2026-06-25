@@ -10,7 +10,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Dict, List
 
-from rl_perf.builder import SimOp
+from llm_perf.builder import SimOp
 
 
 @dataclass

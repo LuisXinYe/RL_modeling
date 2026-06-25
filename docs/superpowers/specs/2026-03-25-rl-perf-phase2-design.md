@@ -1,9 +1,9 @@
-# RL Performance Modeling — Phase 2 Design Spec
+# LLM Performance Modeling — Phase 2 Design Spec
 
 **Date:** 2026-03-25
 **Status:** Draft
 **Author:** horacehxw + Claude
-**Parent Spec:** `docs/superpowers/specs/2026-03-25-rl-perf-modeling-design.md`
+**Parent Spec:** `docs/superpowers/specs/2026-03-25-llm-perf-modeling-design.md`
 
 ## 1. Scope
 
@@ -27,10 +27,10 @@ Phase 2 修复 Phase 1 (MVP) 中与 spec 的偏差，补齐缺失的底层算子
 
 ## 2. Config Changes (config.py)
 
-### 2.1 RLConfig 新增字段
+### 2.1 WorkloadConfig 新增字段
 
 ```python
-class RLConfig(BaseModel):
+class WorkloadConfig(BaseModel):
     # ... 现有字段不变 ...
     use_speculative_decoding: bool = False
     mtp_acceptance_len: Optional[int] = None  # None → fallback 到 mtp_depth
@@ -313,20 +313,20 @@ def derive_targets(self, total_devices, rl_cfg, gen_parallel, train_parallel, ti
 def what_if(self, base_config: dict, overrides: dict,
             total_devices, gen_parallel, train_parallel, time_budget_hours=None) -> TargetReport:
     """base_config + overrides → TargetReport for comparison."""
-    rl_cfg = RLConfig(**{**base_config, **overrides})
+    rl_cfg = WorkloadConfig(**{**base_config, **overrides})
     return self.derive_targets(total_devices, rl_cfg, gen_parallel, train_parallel, time_budget_hours)
 ```
 
-**限制：** `what_if` 的 overrides 仅作用于 `RLConfig` 字段。并行策略（gen_parallel/train_parallel）通过参数直接传入，不在 overrides 范围内。如需对比不同并行配置，应直接调用两次 `derive_targets`。
+**限制：** `what_if` 的 overrides 仅作用于 `WorkloadConfig` 字段。并行策略（gen_parallel/train_parallel）通过参数直接传入，不在 overrides 范围内。如需对比不同并行配置，应直接调用两次 `derive_targets`。
 
 ### 6.4 sensitivity — Spec §8.1
 
 ```python
-def sensitivity(self, rl_cfg: RLConfig, param_name: str, values: list,
+def sensitivity(self, rl_cfg: WorkloadConfig, param_name: str, values: list,
                 total_devices, gen_parallel, train_parallel) -> list[TargetReport]:
     """Sweep one parameter across values."""
-    if param_name not in RLConfig.model_fields:
-        raise ValueError(f"Unknown RLConfig field: {param_name}")
+    if param_name not in WorkloadConfig.model_fields:
+        raise ValueError(f"Unknown WorkloadConfig field: {param_name}")
     results = []
     for v in values:
         cfg = rl_cfg.model_copy(update={param_name: v})
@@ -353,7 +353,7 @@ def format_json(report: TargetReport) -> str:
 
 | File | Change | Lines (est.) |
 |------|--------|:---:|
-| `config.py` | +2 fields to RLConfig | +5 |
+| `config.py` | +2 fields to WorkloadConfig | +5 |
 | `ops.py` | +op_mtp_head, +op_ring_cp | +40 |
 | `builder.py` | SP替换, CP插入, MTP插入, seq_len/cp | +80 |
 | `pipeline.py` | 返回SimResult, startup fix, 投机解码 | +30 |

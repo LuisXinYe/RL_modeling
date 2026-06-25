@@ -8,7 +8,7 @@ from pydantic import BaseModel, field_validator
 
 
 class Phase(str, Enum):
-    """Execution phase of an RL training pipeline.
+    """Execution phase of an LLM forward/backward pipeline.
 
     Used to select the appropriate cost model (prefill vs decode vs training).
     """
@@ -19,22 +19,13 @@ class Phase(str, Enum):
     TRAIN_BWD = "train_bwd"  # MVP: combined backward
 
 
-class RLAlgorithm(str, Enum):
-    """RL training algorithm selection.
-
-    GRPO: Group Relative Policy Optimization — no critic model needed.
-    GSPO:  Group Sequence Policy Optimization — no critic model needed.
-    """
-
-    GRPO = "grpo"
-    GSPO = "gspo"
 
 
 class LayerConfig(BaseModel):
     """Per-layer architecture configuration.
 
     Attributes:
-        attention: Attention variant — one of "MHA", "GQA", "MLA", "SWA".
+        attention: Attention variant — one of "MHA", "GQA", "MLA", "SWA", "DSA".
         num_heads: Number of query attention heads. Must divide evenly by TP degree.
         num_kv_heads: Number of key/value heads (< num_heads for GQA).
         head_dim: Dimension per attention head.
@@ -53,7 +44,7 @@ class LayerConfig(BaseModel):
         mhc_expansion: Expansion factor for mHC residual.
     """
 
-    attention: str = "GQA"  # MHA, GQA, MLA, SWA
+    attention: str = "GQA"  # MHA, GQA, MLA, SWA, DSA
     num_heads: int = 64
     num_kv_heads: int = 8
     head_dim: int = 128
@@ -71,64 +62,19 @@ class LayerConfig(BaseModel):
     rope_dim: int = 0
     # SWA params
     window_size: int = 0
+    # DSA params (DeepSeek Sparse Attention)
+    compress_ratio: int = 0          # KV压缩比: 4(C4A), 128(C128A), 0(非DSA)
+    compress_c_kv: int = 0           # 压缩KV维度 (如512)
+    compress_coeff: float = 0.0      # 压缩代价系数: 1.0(C4A), 0.5(C128A)
+    index_n_heads: int = 0           # Lightning Index头数
+    index_head_dim: int = 0          # Lightning Index头维度 (如128)
+    index_topk: int = 0              # top-K压缩KV条目数 (如512)
+    q_lora_rank: int = 0             # Q LoRA秩
+    o_lora_rank: int = 0             # O LoRA秩
+    o_groups: int = 0                # O投影block-diagonal分组数
     # Residual
     residual: str = "standard"  # standard, mHC
     mhc_expansion: int = 4
-
-
-class VisionEncoderConfig(BaseModel):
-    """Vision Transformer encoder configuration for multimodal models.
-
-    Attributes:
-        hidden_size: ViT hidden dimension (e.g. 1536 for UNIT_1B).
-        num_layers: Number of ViT transformer layers.
-        num_heads: Number of query attention heads.
-        num_kv_heads: Number of key/value heads (0 = same as num_heads, i.e. MHA).
-        head_dim: Dimension per attention head (0 = hidden_size // num_heads).
-        ffn: Feed-forward variant — "SwiGLU" or "SwiGLU".
-        intermediate_size: FFN hidden dimension.
-        dtype: Weight data type.
-        anyres_max_pixels: Maximum pixels for anyres patch computation.
-        patch_size: Patch size for image tokenization.
-        temporal_patch_size: Temporal patch size for video tokenization.
-        merge_size: Merge size for spatial downsampling.
-        mm_vision_token_down_size: Token downsampling factor.
-    """
-
-    hidden_size: int
-    num_layers: int
-    num_heads: int
-    num_kv_heads: int = 0  # Defaults to num_heads (MHA)
-    head_dim: int = 0  # Defaults to hidden_size // num_heads
-    ffn: str = "SwiGLU"
-    intermediate_size: int
-    dtype: str = "bf16"
-    # Anyres patch parameters for image_seq_len computation
-    anyres_max_pixels: int = 1806336
-    patch_size: int = 14
-    temporal_patch_size: int = 2
-    merge_size: int = 2
-    mm_vision_token_down_size: int = 2
-
-    def get_head_dim(self) -> int:
-        return self.head_dim or self.hidden_size // self.num_heads
-
-    def get_num_kv_heads(self) -> int:
-        return self.num_kv_heads or self.num_heads
-
-    def image_seq_len(self) -> int:
-        """Compute image sequence length based on anyres parameters.
-
-        anyres_max_pixels / (patch_size^2) / (merge_size^2) / temporal_patch_size
-        / mm_vision_token_down_size
-
-        For Pangu-74B-VL: 1806336 / 196 / 4 / 2 / 2 = 576 patches
-        """
-        patch_tokens = self.anyres_max_pixels // (self.patch_size ** 2)
-        merged = patch_tokens // (self.merge_size ** 2)
-        temporal = merged // self.temporal_patch_size
-        downsampled = temporal // self.mm_vision_token_down_size
-        return downsampled
 
 
 class ModelConfig(BaseModel):
@@ -143,7 +89,6 @@ class ModelConfig(BaseModel):
         default_layer: Template applied to all layers when `layers` is None.
         layers: Per-layer configs; overrides default_layer if provided.
         auxiliary: Extra model features, e.g. {"mtp_depth": 2}.
-        vision_encoder: Optional ViT config for multimodal models.
     """
 
     name: str
@@ -154,7 +99,6 @@ class ModelConfig(BaseModel):
     default_layer: Optional[LayerConfig] = None
     layers: Optional[List[LayerConfig]] = None
     auxiliary: Optional[dict] = None  # mtp_depth etc.
-    vision_encoder: Optional[VisionEncoderConfig] = None
 
     def get_layers(self) -> List[LayerConfig]:
         if self.layers:
@@ -222,8 +166,8 @@ class HardwareConfig(BaseModel):
         return self.hbm_capacity_gb * self.hbm_usable_ratio
 
 
-class RLConfig(BaseModel):
-    """RL training workload configuration.
+class WorkloadConfig(BaseModel):
+    """Workload configuration shared by inference, training and post-training.
 
     Attributes:
         group_size: Responses generated per prompt (for GRPO/group scoring).
@@ -233,9 +177,8 @@ class RLConfig(BaseModel):
         std_response_len: Std-dev of response length in tokens (optional).
         train_micro_batch_size: Micro-batch size for training (samples).
         gradient_accumulation_steps: Number of gradient accumulation steps.
-        train_batch_size: Global mini-batch size (same as ppo_mini_batch_size in verl).
+        train_batch_size: Global mini-batch size.
         gen_batch_size: Batch size for generation (samples per device).
-        algorithm: RL algorithm — "grpo" or "gspo".
         reward_model: Whether a separate reward model is used for advantage estimation.
         reference_model: Whether a reference model is kept in memory.
         ref_offload_cpu: If True, reference model weights are offloaded to CPU.
@@ -251,25 +194,15 @@ class RLConfig(BaseModel):
     max_response_len: int = 4096
     std_response_len: Optional[int] = None
     train_micro_batch_size: int = 1
-    mini_batch_size: int = 36
     gradient_accumulation_steps: int = 1
     train_batch_size: int = 36
     gen_batch_size: int = 18
-    algorithm: str = "grpo"
     reward_model: bool = False
     reference_model: bool = True
     ref_offload_cpu: bool = False
     colocated: bool = True
     use_speculative_decoding: bool = False
     mtp_acceptance_len: Optional[int] = None
-
-    @field_validator("algorithm")
-    @classmethod
-    def validate_algorithm(cls, v):
-        valid = [e.value for e in RLAlgorithm]
-        if v not in valid:
-            raise ValueError(f"algorithm must be one of {valid}, got '{v}'")
-        return v
 
 
 class ParallelismConfig(BaseModel):
@@ -322,7 +255,83 @@ class ParallelismConfig(BaseModel):
 
     @property
     def total_devices(self) -> int:
-        return self.tp * self.pp * self.dp * self.ep
+        return self.tp * self.pp * self.dp * self.cp
+
+
+class InferenceConfig(BaseModel):
+    """Inference workload configuration.
+
+    Attributes:
+        batch_size: Number of requests processed concurrently.
+        avg_prompt_len: Average prompt length in tokens.
+        avg_response_len: Average response length in tokens.
+        max_response_len: Maximum response length in tokens (for KV cache sizing).
+        std_response_len: Std-dev of response length in tokens (optional).
+        use_speculative_decoding: Enable speculative decoding.
+        mtp_acceptance_len: Expected accepted tokens per MTP step (optional).
+    """
+
+    batch_size: int = 64
+    avg_prompt_len: int = 512
+    avg_response_len: int = 2048
+    max_response_len: int = 4096
+    std_response_len: Optional[int] = None
+    use_speculative_decoding: bool = False
+    mtp_acceptance_len: Optional[int] = None
+
+
+class TrainConfig(BaseModel):
+    """Pretraining workload configuration.
+
+    Attributes:
+        avg_seq_len: Average sequence length in tokens (prompt + response).
+        train_micro_batch_size: Micro-batch size for training.
+        train_batch_size: Global training batch size.
+        gradient_accumulation_steps: Number of gradient accumulation steps.
+    """
+
+    avg_seq_len: int = 4096
+    train_micro_batch_size: int = 4
+    train_batch_size: int = 36
+    gradient_accumulation_steps: int = 1
+
+
+class RuntimeConfig(BaseModel):
+    """Unified runtime configuration that bundles model, hardware, network,
+    parallelism, and workload parameters for a specific deployment scenario.
+
+    Supports three workload sections:
+      - rl: RL post-training (generation + reference + training)
+      - inference: Standalone inference / serving
+      - train: Standalone pretraining
+
+    Attributes:
+        name: Runtime configuration name.
+        description: Human-readable description.
+        model: Model config name (resolved from configs/models/).
+        hardware: Hardware config name (resolved from configs/hardware/).
+        network: Network config name (resolved from configs/network/).
+        total_devices: Total number of accelerator devices.
+        parallelism: Training parallelism configuration.
+        gen_parallelism: Generation parallelism (optional, defaults to parallelism).
+        ref_parallelism: Reference parallelism (optional, defaults to parallelism).
+        rl: RL workload configuration (optional).
+        inference: Inference workload configuration (optional).
+        train: Pretraining workload configuration (optional).
+    """
+
+    name: str
+    description: str = ""
+    model: str = ""
+    hardware: str = ""
+    network: Optional[str] = None
+    total_devices: int = 8
+    parallelism: ParallelismConfig = ParallelismConfig()
+    gen_parallelism: Optional[ParallelismConfig] = None
+    ref_parallelism: Optional[ParallelismConfig] = None
+    rl: Optional[WorkloadConfig] = None
+    inference: Optional[InferenceConfig] = None
+    train: Optional[TrainConfig] = None
 
 
 def _load_yaml_config(path: str, config_class):
@@ -340,3 +349,13 @@ def load_model_config(path: str) -> ModelConfig:
 def load_hardware_config(path: str) -> HardwareConfig:
     """Load a HardwareConfig from a YAML file."""
     return _load_yaml_config(path, HardwareConfig)
+
+
+def load_runtime_config(path: str) -> RuntimeConfig:
+    """Load a RuntimeConfig from a YAML file.
+
+    The runtime YAML may contain nested dicts for parallelism, rl,
+    inference, and train sections, which are automatically parsed
+    into their corresponding pydantic models.
+    """
+    return _load_yaml_config(path, RuntimeConfig)

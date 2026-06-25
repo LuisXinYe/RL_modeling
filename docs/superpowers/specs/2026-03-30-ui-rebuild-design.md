@@ -1,12 +1,12 @@
-# rl-perf UI Rebuild — Design Spec
+# llm-perf UI Rebuild — Design Spec
 
 **Date:** 2026-03-30
 **Status:** Approved
-**Replaces:** Gradio-based GUI (src/rl_perf/ui/*.py)
+**Replaces:** Gradio-based GUI (src/llm_perf/ui/*.py)
 
 ## Overview
 
-Rebuild the rl-perf GUI from scratch using FastAPI + vanilla HTML/CSS/JS + Plotly.js. The current Gradio UI scored 16/20 on the Impeccable audit but still looks generic due to Gradio's rendering constraints. The new UI will have full design control, following Impeccable `/frontend-design` guidelines.
+Rebuild the llm-perf GUI from scratch using FastAPI + vanilla HTML/CSS/JS + Plotly.js. The current Gradio UI scored 16/20 on the Impeccable audit but still looks generic due to Gradio's rendering constraints. The new UI will have full design control, following Impeccable `/frontend-design` guidelines.
 
 ## Architecture
 
@@ -19,9 +19,9 @@ Browser (SPA)                    FastAPI Server
 │  Plotly.js (CDN)     │         │  /api/hardware    │
 └─────────────────────┘          └──────────────────┘
    Static files served                Uses existing
-   by FastAPI                         rl_perf.model,
-                                      rl_perf.search,
-                                      rl_perf.config
+   by FastAPI                         llm_perf.model,
+                                      llm_perf.search,
+                                      llm_perf.config
 ```
 
 - **FastAPI** serves static files + 4 REST endpoints
@@ -35,7 +35,7 @@ Side-by-side: config panel (left, 380px fixed) | results panel (right, flexible)
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  rl-perf    RL Training Performance Modeling      │
+│  llm-perf    LLM Performance Modeling      │
 ├──────────┬───────────────────────────────────────┤
 │ CONFIG   │  RESULTS                               │
 │ (380px)  │                                        │
@@ -399,7 +399,7 @@ Per Impeccable DON'T list:
 ## File Structure
 
 ```
-src/rl_perf/ui/
+src/llm_perf/ui/
 ├── __init__.py
 ├── api.py              # FastAPI app, REST endpoints, static file serving
 └── static/

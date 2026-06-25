@@ -4,7 +4,7 @@ vocab_size: 129280
 num_layers: 61
 dtype: bf16
 default_layer:
-  attention: MLA
+  attention: DSA
   num_heads: 128
   num_kv_heads: 128
   head_dim: 128
@@ -20,5 +20,15 @@ default_layer:
   intermediate_size: 18432
   residual: mHC
   mhc_expansion: 4
+  compress_ratio: 4
+  compress_c_kv: 512
+  compress_coeff: 1.0
+  index_n_heads: 64
+  index_head_dim: 128
+  index_topk: 512
+  q_lora_rank: 1024
+  o_lora_rank: 1024
+  o_groups: 8
+  window_size: 4096
 auxiliary:
   mtp_depth: 1

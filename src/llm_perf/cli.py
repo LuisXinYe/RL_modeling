@@ -5,14 +5,14 @@ import typer
 import yaml
 from pydantic import ValidationError
 
-from rl_perf.config import (
+from llm_perf.config import (
     load_model_config,
     load_hardware_config,
-    RLConfig,
+    WorkloadConfig,
     ParallelismConfig,
 )
-from rl_perf.model import RLPerformanceModel
-from rl_perf.report import format_table, format_json
+from llm_perf.model import LLMPerformanceModel
+from llm_perf.report import format_table, format_json
 
 _CONFIGS_DIR = Path(__file__).resolve().parent.parent.parent / "configs"
 
@@ -22,7 +22,7 @@ class OutputFormat(str, Enum):
     json = "json"
 
 
-app = typer.Typer(help="RL Training Performance Modeling Tool")
+app = typer.Typer(help="LLM Performance Modeling Tool")
 
 # Hardware shortname mapping
 HW_SHORTCUTS = {
@@ -82,9 +82,6 @@ def targets(
     tp: int = typer.Option(4, "--tp"),
     pp: int = typer.Option(8, "--pp"),
     cp: int = typer.Option(4, "--cp"),
-    algorithm: str = typer.Option(
-        "grpo", "--algorithm", help="RL algorithm: grpo or gspo"
-    ),
     reward_model: bool = typer.Option(
         False,
         "--reward-model",
@@ -100,7 +97,7 @@ def targets(
         mc = load_model_config(model)
         hw = load_hardware_config(resolve_hardware(hardware))
 
-        rl_cfg = RLConfig(
+        rl_cfg = WorkloadConfig(
             group_size=group_size,
             avg_prompt_len=avg_prompt_len,
             avg_response_len=avg_response_len,
@@ -109,7 +106,6 @@ def targets(
             train_batch_size=train_batch,
             gradient_accumulation_steps=grad_acc,
             gen_batch_size=gen_batch,
-            algorithm=algorithm,
             reward_model=reward_model,
         )
 
@@ -118,7 +114,7 @@ def targets(
         gen_parallel = ParallelismConfig(tp=tp, pp=1, dp=max(1, devices // tp))
         train_parallel = ParallelismConfig(tp=tp, pp=pp, dp=dp)
 
-        perf = RLPerformanceModel(mc, hw)
+        perf = LLMPerformanceModel(mc, hw)
         ref_parallel = ParallelismConfig(tp=tp, pp=1, dp=dp)
         report = perf.derive_targets(
             devices, rl_cfg, gen_parallel, train_parallel, ref_parallel
@@ -149,12 +145,12 @@ def check(
         mc = load_model_config(model)
         hw = load_hardware_config(resolve_hardware(hardware))
 
-        rl_cfg = RLConfig(group_size=group_size)
+        rl_cfg = WorkloadConfig(group_size=group_size)
         dp = max(1, devices // (tp * pp))
         gen_parallel = ParallelismConfig(tp=tp, dp=max(1, devices // tp))
         train_parallel = ParallelismConfig(tp=tp, pp=pp, dp=dp)
 
-        perf = RLPerformanceModel(mc, hw)
+        perf = LLMPerformanceModel(mc, hw)
         ref_parallel = ParallelismConfig(tp=tp, pp=1, dp=dp)
         report = perf.feasibility_check(devices, rl_cfg, gen_parallel, train_parallel, ref_parallel)
 
@@ -169,6 +165,6 @@ def ui(
     port: int = typer.Option(7860, "--port", help="Port number"),
 ):
     """Launch the web GUI."""
-    from rl_perf.ui.api import launch
+    from llm_perf.ui.api import launch
 
     launch(host=host, port=port)

@@ -1,22 +1,10 @@
-name: "Mistral-7B"
-description: "Mistral 7B on 8x Ascend 910C — single-node RL training with sliding window attention"
-model:
-  name: "Mistral-7B"
-  hidden_size: 4096
-  vocab_size: 32000
-  num_layers: 32
-  dtype: bf16
-  layer:
-    attention: SWA
-    num_heads: 32
-    num_kv_heads: 8
-    head_dim: 128
-    window_size: 4096
-    ffn: SwiGLU
-    intermediate_size: 14336
-    residual: standard
+name: "Mistral-7B (8x 910C)"
+description: "Mistral 7B on 8x Ascend 910C — single-node, sliding window attention"
+model: "Mistral-7B"
 hardware: "Ascend 910C"
+network: "HCCS+RoCE (910C)"
 total_devices: 8
+
 parallelism:
   tp: 1
   pp: 1
@@ -30,16 +18,31 @@ parallelism:
   full_recomputation: false
   optimizer_offload: false
   activation_offload: false
+
 rl:
-  total_prompts: 10000
   group_size: 8
   avg_prompt_len: 512
   avg_response_len: 2048
   max_response_len: 4096
   train_micro_batch_size: 4
+  train_batch_size: 36
   gradient_accumulation_steps: 1
   gen_batch_size: 64
   colocated: false
   reference_model: true
   ref_offload_cpu: false
   use_speculative_decoding: false
+
+inference:
+  batch_size: 64
+  avg_prompt_len: 512
+  avg_response_len: 2048
+  max_response_len: 4096
+  std_response_len: null
+  use_speculative_decoding: false
+
+train:
+  avg_seq_len: 4096
+  train_micro_batch_size: 4
+  train_batch_size: 36
+  gradient_accumulation_steps: 1

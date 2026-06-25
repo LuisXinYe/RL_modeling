@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from rl_perf.builder import SimOp, build_generation_step, build_layer_ops, build_training_step
-from rl_perf.config import (
+from llm_perf.builder import SimOp, build_generation_step, build_layer_ops, build_training_step
+from llm_perf.config import (
     HardwareConfig,
     LayerConfig,
     ModelConfig,
     ParallelismConfig,
     Phase,
-    RLConfig,
+    WorkloadConfig,
     load_hardware_config,
     load_model_config,
 )
@@ -51,8 +51,8 @@ def parallel_cfg_dp2() -> ParallelismConfig:
 
 
 @pytest.fixture
-def rl_cfg() -> RLConfig:
-    return RLConfig(
+def rl_cfg() -> WorkloadConfig:
+    return WorkloadConfig(
         total_prompts=100,
         group_size=8,
         avg_prompt_len=512,
@@ -290,7 +290,11 @@ def test_sp_false_keeps_allreduce(single_layer, model_cfg, hw):
 
 
 def test_sp_comm_volume_matches_allreduce(single_layer, model_cfg, hw):
-    """SP (AG+RS) total comm duration should equal AllReduce duration."""
+    """SP (AG+RS) total comm duration should equal AllReduce duration.
+
+    AllGather and ReduceScatter are each sized by the full (gathered) sequence,
+    so AG+RS == AllReduce for the same tensor (ring: (N-1)/N + (N-1)/N = 2(N-1)/N).
+    """
     tp = 4
     parallel_no_sp = ParallelismConfig(tp=tp, pp=1, dp=1, ep=1, sp=False)
     parallel_sp = ParallelismConfig(tp=tp, pp=1, dp=1, ep=1, sp=True)
@@ -415,7 +419,7 @@ def test_build_training_step_rejects_bad_tp():
     """TP that doesn't divide num_heads should raise ValueError."""
     mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
     hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
-    rl = RLConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
+    rl = WorkloadConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
     parallel = ParallelismConfig(tp=6, pp=1, dp=1)
     with pytest.raises(ValueError, match="num_heads.*divisible.*tp"):
         build_training_step(mc, hw, parallel, rl)
@@ -424,7 +428,7 @@ def test_build_training_step_rejects_bad_tp():
 def test_build_generation_step_rejects_bad_tp():
     mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
     hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
-    rl = RLConfig(total_prompts=100, group_size=4, gen_batch_size=8)
+    rl = WorkloadConfig(total_prompts=100, group_size=4, gen_batch_size=8)
     parallel = ParallelismConfig(tp=6, pp=1, dp=1)
     with pytest.raises(ValueError, match="num_heads.*divisible.*tp"):
         build_generation_step(mc, hw, parallel, rl)
@@ -433,20 +437,30 @@ def test_build_generation_step_rejects_bad_tp():
 def test_build_training_step_rejects_pp_gt_layers():
     mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
     hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
-    rl = RLConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
+    rl = WorkloadConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
     parallel = ParallelismConfig(tp=1, pp=64, dp=1)
     with pytest.raises(ValueError, match="pp.*layers"):
         build_training_step(mc, hw, parallel, rl)
 
 
-def test_build_training_step_rejects_pp_not_dividing_layers():
+def test_build_training_step_allows_uneven_pp():
+    """Uneven PP splits are now supported (remainder distributed across stages).
+
+    Llama 3.1 8B has 32 layers; pp=3 splits as 11/11/10 rather than raising.
+    """
+    from llm_perf.builder import _split_stages
+
     mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
     hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
-    rl = RLConfig(total_prompts=100, group_size=4, train_micro_batch_size=2, gen_batch_size=8)
-    # Llama 3.1 8B has 32 layers; pp=3 doesn't divide evenly
+    rl = WorkloadConfig(group_size=4, train_micro_batch_size=2, gen_batch_size=8)
     parallel = ParallelismConfig(tp=1, pp=3, dp=1)
-    with pytest.raises(ValueError, match="not divisible"):
-        build_training_step(mc, hw, parallel, rl)
+
+    ops = build_training_step(mc, hw, parallel, rl)
+    assert len(ops) > 0
+    # 32 layers across 3 stages → 11 + 11 + 10
+    stage_sizes = [len(s) for s in _split_stages(mc.get_layers(), 3)]
+    assert sum(stage_sizes) == mc.num_layers
+    assert max(stage_sizes) - min(stage_sizes) <= 1
 
 
 def test_hybrid_layers_different_types(hw, rl_cfg):

@@ -1,11 +1,11 @@
 import pytest
 from pathlib import Path
-from rl_perf.model import RLPerformanceModel
-from rl_perf.config import (
+from llm_perf.model import LLMPerformanceModel
+from llm_perf.config import (
     load_model_config, load_hardware_config,
-    RLConfig, ParallelismConfig,
+    WorkloadConfig, ParallelismConfig,
 )
-from rl_perf.report import format_table
+from llm_perf.report import format_table
 
 CONFIGS_DIR = Path(__file__).parent.parent / "configs"
 
@@ -17,8 +17,8 @@ def hw():
 
 @pytest.fixture
 def rl_cfg():
-    return RLConfig(
-        total_prompts=10000, group_size=8,
+    return WorkloadConfig(
+        group_size=8,
         avg_prompt_len=512, avg_response_len=2048,
         max_response_len=4096,
         train_micro_batch_size=4, gradient_accumulation_steps=4,
@@ -38,15 +38,17 @@ def test_e2e_derive_targets(model_name, tp, pp, dp, ep, expected_max_hours, hw, 
     gen_parallel = ParallelismConfig(tp=tp, pp=1, dp=max(1, total_devices // tp))
     train_parallel = ParallelismConfig(tp=tp, pp=pp, dp=dp, ep=ep)
 
-    perf = RLPerformanceModel(mc, hw)
-    report = perf.derive_targets(total_devices, rl_cfg, gen_parallel, train_parallel, time_budget_hours=24)
+    perf = LLMPerformanceModel(mc, hw)
+    report = perf.derive_targets(
+        total_devices, rl_cfg, gen_parallel, train_parallel, train_parallel
+    )
 
-    # Sanity checks
-    assert report.epoch_time_hours > 0
-    assert report.epoch_time_hours < expected_max_hours
+    # Sanity checks — step_time is a single RL step (seconds). Use the old
+    # epoch-hours bound (converted to seconds) as a loose upper sanity bound.
+    assert report.step_time_seconds > 0
+    assert report.step_time_seconds < expected_max_hours * 3600
     assert report.gen_tps_target > 0
     assert report.train_tps_target > 0
-    assert report.bottleneck in ("GENERATION", "TRAINING", "BALANCED")
     assert report.memory is not None
     assert report.memory.weight_gb > 0
 
@@ -66,10 +68,12 @@ def test_e2e_moe_models(model_name, tp, pp, dp, ep, hw, rl_cfg):
     gen_parallel = ParallelismConfig(tp=tp, pp=1, dp=max(1, total_devices // tp))
     train_parallel = ParallelismConfig(tp=tp, pp=pp, dp=dp, ep=ep)
 
-    perf = RLPerformanceModel(mc, hw)
-    report = perf.derive_targets(total_devices, rl_cfg, gen_parallel, train_parallel)
+    perf = LLMPerformanceModel(mc, hw)
+    report = perf.derive_targets(
+        total_devices, rl_cfg, gen_parallel, train_parallel, train_parallel
+    )
 
-    assert report.epoch_time_hours > 0
+    assert report.step_time_seconds > 0
     assert report.gen_tps_target > 0
     assert report.train_tps_target > 0
 
@@ -80,11 +84,11 @@ def test_e2e_moe_models(model_name, tp, pp, dp, ep, hw, rl_cfg):
 def test_e2e_memory_feasibility(hw):
     """Test that a too-large model on too-few devices is flagged as infeasible."""
     mc = load_model_config(str(CONFIGS_DIR / "models" / "qwen2_5_72b.yaml"))
-    rl_cfg = RLConfig(total_prompts=100, group_size=4)
+    rl_cfg = WorkloadConfig(group_size=4)
     # Only 8 devices for a 72B model — should be memory-tight
     parallel = ParallelismConfig(tp=8, pp=1, dp=1)
 
-    perf = RLPerformanceModel(mc, hw)
+    perf = LLMPerformanceModel(mc, hw)
     report = perf.feasibility_check(8, rl_cfg, parallel, parallel)
 
     # Should have a memory profile either way
@@ -93,19 +97,19 @@ def test_e2e_memory_feasibility(hw):
 
 
 def test_e2e_what_if_comparison(hw):
-    """Doubling group_size should increase epoch time."""
+    """Doubling group_size should increase step time."""
     mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
     parallel = ParallelismConfig(tp=8, pp=1, dp=8)
 
-    perf = RLPerformanceModel(mc, hw)
+    perf = LLMPerformanceModel(mc, hw)
 
-    rl_base = RLConfig(total_prompts=1000, group_size=8)
-    rl_double = RLConfig(total_prompts=1000, group_size=16)
+    rl_base = WorkloadConfig(group_size=8)
+    rl_double = WorkloadConfig(group_size=16)
 
-    base = perf.derive_targets(64, rl_base, parallel, parallel)
-    double = perf.derive_targets(64, rl_double, parallel, parallel)
+    base = perf.derive_targets(64, rl_base, parallel, parallel, parallel)
+    double = perf.derive_targets(64, rl_double, parallel, parallel, parallel)
 
-    assert double.epoch_time_hours > base.epoch_time_hours
+    assert double.step_time_seconds > base.step_time_seconds
 
 
 def test_e2e_full_suite_print(hw, rl_cfg, capsys):
@@ -124,12 +128,12 @@ def test_e2e_full_suite_print(hw, rl_cfg, capsys):
         gen_p = ParallelismConfig(tp=tp, pp=1, dp=max(1, total_devices // tp))
         train_p = ParallelismConfig(tp=tp, pp=pp, dp=dp, ep=ep)
 
-        perf = RLPerformanceModel(mc, hw)
-        report = perf.derive_targets(total_devices, rl_cfg, gen_p, train_p, time_budget_hours=24)
+        perf = LLMPerformanceModel(mc, hw)
+        report = perf.derive_targets(total_devices, rl_cfg, gen_p, train_p, train_p)
 
         print(f"\n{'='*60}")
         print(f"Model: {model_name} | Devices: {total_devices} | TP={tp} PP={pp} DP={dp} EP={ep}")
-        print(f"Epoch: {report.epoch_time_hours:.2f}h | Bottleneck: {report.bottleneck}")
+        print(f"Step: {report.step_time_seconds:.2f}s")
         print(f"Gen TPS: {report.gen_tps_target:,.0f} | Train TPS: {report.train_tps_target:,.0f}")
         print(f"Memory: train={report.memory.total_train_gb:.1f}GB gen={report.memory.total_gen_gb:.1f}GB")
         print(f"{'='*60}")
@@ -140,7 +144,7 @@ def test_e2e_deepseekv3_with_mtp(rl_cfg):
     mc = load_model_config(str(CONFIGS_DIR / "models" / "deepseekv3_671b.yaml"))
     hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
 
-    perf = RLPerformanceModel(mc, hw)
+    perf = LLMPerformanceModel(mc, hw)
     total_devices = 256
     gen_p = ParallelismConfig(tp=8, pp=1, dp=total_devices // 8)
     train_p = ParallelismConfig(tp=8, pp=1, dp=4, ep=8)
@@ -148,19 +152,19 @@ def test_e2e_deepseekv3_with_mtp(rl_cfg):
     report = perf.derive_targets(
         total_devices=total_devices,
         rl_cfg=rl_cfg, gen_parallel=gen_p, train_parallel=train_p,
-        time_budget_hours=48,
+        ref_parallel=train_p,
     )
-    assert report.epoch_time_hours > 0
+    assert report.step_time_seconds > 0
     assert report.memory is not None
 
-    # MTP should increase training time vs no-mtp
+    # MTP should not decrease training time vs no-mtp
     mc_no_mtp = mc.model_copy(update={"auxiliary": None})
-    perf_no_mtp = RLPerformanceModel(mc_no_mtp, hw)
+    perf_no_mtp = LLMPerformanceModel(mc_no_mtp, hw)
     report_no_mtp = perf_no_mtp.derive_targets(
-        total_devices=train_p.total_devices, rl_cfg=rl_cfg,
-        gen_parallel=gen_p, train_parallel=train_p,
+        total_devices=total_devices, rl_cfg=rl_cfg,
+        gen_parallel=gen_p, train_parallel=train_p, ref_parallel=train_p,
     )
-    assert report.train_time_hours >= report_no_mtp.train_time_hours
+    assert report.train_time_seconds >= report_no_mtp.train_time_seconds
 
 
 def test_e2e_sp_cp_config(rl_cfg):
@@ -168,20 +172,20 @@ def test_e2e_sp_cp_config(rl_cfg):
     mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
     hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
 
-    perf = RLPerformanceModel(mc, hw)
+    perf = LLMPerformanceModel(mc, hw)
 
     # SP enabled with TP
     gen_p = ParallelismConfig(tp=8, pp=1, dp=8, sp=True)
     train_p = ParallelismConfig(tp=8, pp=1, dp=8, sp=True)
-    report = perf.derive_targets(64, rl_cfg, gen_p, train_p)
-    assert report.epoch_time_hours > 0
+    report = perf.derive_targets(64, rl_cfg, gen_p, train_p, train_p)
+    assert report.step_time_seconds > 0
     assert report.memory.weight_gb > 0
 
     # CP enabled
     gen_p_cp = ParallelismConfig(tp=8, pp=1, dp=4, cp=2)
     train_p_cp = ParallelismConfig(tp=8, pp=1, dp=4, cp=2)
-    report_cp = perf.derive_targets(64, rl_cfg, gen_p_cp, train_p_cp)
-    assert report_cp.epoch_time_hours > 0
+    report_cp = perf.derive_targets(64, rl_cfg, gen_p_cp, train_p_cp, train_p_cp)
+    assert report_cp.step_time_seconds > 0
 
 
 def test_e2e_sensitivity_sweep(rl_cfg):
@@ -189,7 +193,7 @@ def test_e2e_sensitivity_sweep(rl_cfg):
     mc = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
     hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
 
-    perf = RLPerformanceModel(mc, hw)
+    perf = LLMPerformanceModel(mc, hw)
     gen_p = ParallelismConfig(tp=8, pp=1, dp=8)
     train_p = ParallelismConfig(tp=8, pp=1, dp=8)
 
@@ -199,5 +203,5 @@ def test_e2e_sensitivity_sweep(rl_cfg):
     )
     assert len(results) == 3
     for r in results:
-        assert r.epoch_time_hours > 0
+        assert r.step_time_seconds > 0
         assert r.memory is not None

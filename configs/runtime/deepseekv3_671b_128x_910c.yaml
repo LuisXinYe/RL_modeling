@@ -1,0 +1,48 @@
+name: "DeepSeekV3-671B (128x 910C)"
+description: "DeepSeek-V3 671B MoE on 128x Ascend 910C — large-scale with MLA + MoE"
+model: "DeepSeek-V3-671B"
+hardware: "Ascend 910C"
+network: "HCCS+RoCE (910C)"
+total_devices: 128
+
+parallelism:
+  tp: 4
+  pp: 1
+  ep: 8
+  cp: 1
+  cp_type: ring
+  sp: false
+  zero_stage: 0
+  pp_schedule: "1f1b"
+  recompute_attention: true
+  full_recomputation: false
+  optimizer_offload: false
+  activation_offload: false
+
+rl:
+  group_size: 8
+  avg_prompt_len: 512
+  avg_response_len: 2048
+  max_response_len: 4096
+  train_micro_batch_size: 1
+  train_batch_size: 36
+  gradient_accumulation_steps: 4
+  gen_batch_size: 16
+  colocated: false
+  reference_model: true
+  ref_offload_cpu: true
+  use_speculative_decoding: false
+
+inference:
+  batch_size: 16
+  avg_prompt_len: 512
+  avg_response_len: 2048
+  max_response_len: 4096
+  std_response_len: null
+  use_speculative_decoding: false
+
+train:
+  avg_seq_len: 4096
+  train_micro_batch_size: 1
+  train_batch_size: 36
+  gradient_accumulation_steps: 4

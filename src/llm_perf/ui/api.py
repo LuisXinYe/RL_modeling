@@ -1,4 +1,4 @@
-"""FastAPI backend for rl-perf web GUI.
+"""FastAPI backend for llm-perf web GUI.
 
 Serves static files (index.html, styles.css, app.js) and provides REST
 endpoints for model prediction, search, and configuration loading.
@@ -14,19 +14,18 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from rl_perf.config import (
+from llm_perf.config import (
     HardwareConfig,
     LayerConfig,
     ModelConfig,
     ParallelismConfig,
-    RLConfig,
-    VisionEncoderConfig,
+    WorkloadConfig,
     load_hardware_config,
     load_model_config,
 )
-from rl_perf.model import RLPerformanceModel
-from rl_perf.search import pareto_search, sensitivity_sweep
-from rl_perf.ui.hf_import import fetch_hf_config, hf_config_to_model_config
+from llm_perf.model import LLMPerformanceModel
+from llm_perf.search import pareto_search, sensitivity_sweep
+from llm_perf.ui.hf_import import fetch_hf_config, hf_config_to_model_config
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _CONFIGS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "configs"
@@ -37,7 +36,6 @@ _MODEL_TEMPLATES = {
     "Mistral-7B": "mistral_7b",
     "Qwen3-235B-MoE": "qwen3_235b_moe",
     "DeepSeekV3-671B": "deepseekv3_671b",
-    "Pangu-74B-VL": "pangu_74b_vl",
 }
 
 _HW_TEMPLATES = {
@@ -46,7 +44,21 @@ _HW_TEMPLATES = {
     "CloudMatrix 384": "cloudmatrix_384",
 }
 
-app = FastAPI(title="rl-perf", docs_url=None, redoc_url=None)
+_NETWORK_TEMPLATES = {
+    "HCCS+RoCE (910B)": "hccs_roce_910b",
+    "HCCS+RoCE (910C)": "hccs_roce_910c",
+    "CloudMatrix 384 Fullmesh": "cloudmatrix_384_fullmesh",
+}
+
+_RUNTIME_TEMPLATES = {
+    "DeepSeekV3-671B (128x 910C)": "deepseekv3_671b_128x_910c",
+    "Llama-3.1-8B (8x 910C)": "llama3_1_8b_8x_910c",
+    "Mistral-7B (8x 910C)": "mistral_7b_8x_910c",
+    "Qwen2.5-72B (32x 910C)": "qwen2_5_72b_32x_910c",
+    "Qwen3-235B-MoE (64x 910C)": "qwen3_235b_moe_64x_910c",
+}
+
+app = FastAPI(title="llm-perf", docs_url=None, redoc_url=None)
 
 
 # ── Pydantic models for request/response ──────────────────────────
@@ -72,21 +84,6 @@ class LayerInput(BaseModel):
     mhc_expansion: int = 4
 
 
-class VisionEncoderInput(BaseModel):
-    hidden_size: int = 1536
-    num_layers: int = 26
-    num_heads: int = 16
-    num_kv_heads: int = 0
-    head_dim: int = 0
-    intermediate_size: int = 4608
-    ffn: str = "SwiGLU"
-    anyres_max_pixels: int = 1806336
-    patch_size: int = 14
-    temporal_patch_size: int = 2
-    merge_size: int = 2
-    mm_vision_token_down_size: int = 2
-
-
 class ModelInput(BaseModel):
     name: str = "Llama-3.1-8B"
     hidden_size: int = 4096
@@ -94,7 +91,6 @@ class ModelInput(BaseModel):
     num_layers: int = 32
     dtype: str = "bf16"
     layer: LayerInput = LayerInput()
-    vision_encoder: VisionEncoderInput | None = None
     auxiliary: dict | None = None
     layers_summary: str | None = None
 
@@ -117,7 +113,7 @@ class ParallelismInput(BaseModel):
     grad_offload: bool = False
 
 
-class RLInput(BaseModel):
+class WorkloadInput(BaseModel):
     group_size: int = 8
     avg_prompt_len: int = 512
     avg_response_len: int = 2048
@@ -127,11 +123,8 @@ class RLInput(BaseModel):
     gradient_accumulation_steps: int = 1
     train_batch_size: int = 36
     gen_batch_size: int = 64
-    algorithm: str = "grpo"
-    ppo_epochs: int = 1
     reward_model: bool = False
     colocated: bool = True
-    online_rollout: bool = True
     reference_model: bool = True
     ref_offload_cpu: bool = False
     use_speculative_decoding: bool = False
@@ -139,13 +132,15 @@ class RLInput(BaseModel):
 
 
 class PredictRequest(BaseModel):
+    scenario: str = "post_training"  # "inference" | "pretraining" | "post_training"
     model: ModelInput = ModelInput()
     hardware: str = "Ascend 910C"
+    network: str | None = None
     total_devices: int = 8
     parallelism: ParallelismInput = ParallelismInput()
     gen_parallelism: ParallelismInput | None = None
     ref_parallelism: ParallelismInput | None = None
-    rl: RLInput = RLInput()
+    rl: WorkloadInput = WorkloadInput()
 
 
 class SearchConfig(BaseModel):
@@ -159,11 +154,12 @@ class SearchConfig(BaseModel):
 class SearchRequest(BaseModel):
     model: ModelInput = ModelInput()
     hardware: str = "Ascend 910C"
+    network: str | None = None
     total_devices: int = 8
     parallelism: ParallelismInput = ParallelismInput()
     gen_parallelism: ParallelismInput | None = None
     ref_parallelism: ParallelismInput | None = None
-    rl: RLInput = RLInput()
+    rl: WorkloadInput = WorkloadInput()
     search: SearchConfig = SearchConfig()
 
 
@@ -177,8 +173,15 @@ class HFImportRequest(BaseModel):
 def _expand_layers_summary(
     summary: str, default_layer: LayerConfig
 ) -> list[LayerConfig] | None:
-    """Expand a layers_summary string like '4x GQA+SwiGLU, 47x GQA+MoE E80' into a
-    list of LayerConfig objects.
+    """Expand a layers_summary string into a list of LayerConfig objects.
+
+    Supports two formats:
+    - Old: '4x GQA+SwiGLU, 47x GQA+MoE E80'
+    - New: '4x GQA+SwiGLU, 47x GQA+MoE E80/K8/SE1/EI1280/SI2560'
+
+    The new format includes full MoE params (E=num_experts, K=top_k,
+    SE=num_shared_experts, EI=expert_intermediate_size,
+    SI=shared_intermediate_size) for accurate reconstruction.
 
     Only the FFN type and MoE params are taken from the summary string.
     The attention type is always inherited from default_layer (which reflects
@@ -192,14 +195,29 @@ def _expand_layers_summary(
     parts = [p.strip() for p in summary.split(",")]
     layers = []
     for part in parts:
-        # Pattern: "{count}x {attention}+{ffn}[ E{num_experts}]"
-        m = re.match(r"(\d+)x\s+(\w+)\+(\w+)(?:\s+E(\d+))?", part)
+        # Pattern: "{count}x {attention}+{ffn}[ MoE params]"
+        # Old MoE: "47x GQA+MoE E80"
+        # New MoE: "47x GQA+MoE E80/K8/SE1/EI1280/SI2560"
+        m = re.match(
+            r"(\d+)x\s+(\w+)\+(\w+)"
+            r"(?:\s+E(\d+)"           # E = num_experts
+            r"(?:/K(\d+))?"           # K = top_k (optional)
+            r"(?:/SE(\d+))?"          # SE = num_shared_experts (optional)
+            r"(?:/EI(\d+))?"          # EI = expert_intermediate_size (optional)
+            r"(?:/SI(\d+))?"          # SI = shared_intermediate_size (optional)
+            r")?",
+            part,
+        )
         if not m:
             return None
         count = int(m.group(1))
         # attn from summary is ignored — user's UI selection takes priority
         ffn = m.group(3)
         n_experts = int(m.group(4)) if m.group(4) else None
+        top_k = int(m.group(5)) if m.group(5) else None
+        n_shared = int(m.group(6)) if m.group(6) else None
+        ei = int(m.group(7)) if m.group(7) else None
+        si = int(m.group(8)) if m.group(8) else None
 
         for _ in range(count):
             lc = default_layer.model_copy()
@@ -208,11 +226,17 @@ def _expand_layers_summary(
             if ffn == "MoE":
                 if n_experts is not None:
                     lc.num_experts = n_experts
-                # MoE layers need expert_intermediate_size; if zero, fall back to
-                # the dense intermediate_size.
-                if lc.expert_intermediate_size == 0 and lc.intermediate_size > 0:
+                if top_k is not None:
+                    lc.top_k = top_k
+                if n_shared is not None:
+                    lc.num_shared_experts = n_shared
+                if ei is not None:
+                    lc.expert_intermediate_size = ei
+                elif lc.expert_intermediate_size == 0 and lc.intermediate_size > 0:
                     lc.expert_intermediate_size = lc.intermediate_size
-                if lc.shared_intermediate_size == 0 and lc.num_shared_experts > 0 and lc.intermediate_size > 0:
+                if si is not None:
+                    lc.shared_intermediate_size = si
+                elif lc.shared_intermediate_size == 0 and lc.num_shared_experts > 0 and lc.intermediate_size > 0:
                     lc.shared_intermediate_size = lc.intermediate_size
             else:
                 # Non-MoE layer: zero out MoE params
@@ -245,23 +269,6 @@ def _build_model_config(m: ModelInput) -> ModelConfig:
         window_size=m.layer.window_size,
         mhc_expansion=m.layer.mhc_expansion,
     )
-    ve_cfg = None
-    if m.vision_encoder:
-        ve = m.vision_encoder
-        ve_cfg = VisionEncoderConfig(
-            hidden_size=ve.hidden_size,
-            num_layers=ve.num_layers,
-            num_heads=ve.num_heads,
-            num_kv_heads=ve.num_kv_heads,
-            head_dim=ve.head_dim,
-            ffn=ve.ffn,
-            intermediate_size=ve.intermediate_size,
-            anyres_max_pixels=ve.anyres_max_pixels,
-            patch_size=ve.patch_size,
-            temporal_patch_size=ve.temporal_patch_size,
-            merge_size=ve.merge_size,
-            mm_vision_token_down_size=ve.mm_vision_token_down_size,
-        )
 
     # Build layers list from layers_summary if available (mixed-layer models)
     layers = _expand_layers_summary(m.layers_summary, layer) if m.layers_summary else None
@@ -274,16 +281,52 @@ def _build_model_config(m: ModelInput) -> ModelConfig:
         dtype=m.dtype,
         default_layer=layer,
         layers=layers,
-        vision_encoder=ve_cfg,
         auxiliary=m.auxiliary,
     )
 
 
-def _build_hw_config(hw_name: str) -> HardwareConfig:
+def _load_yaml_raw(path: Path) -> dict:
+    """Load a YAML file and return the raw dict."""
+    import yaml as _yaml
+
+    with open(path, encoding="utf-8") as f:
+        return _yaml.safe_load(f) or {}
+
+
+def _build_hw_config(hw_name: str, network_name: str | None = None) -> HardwareConfig:
+    """Build a HardwareConfig by merging device specs from hardware/ and
+    interconnect specs from network/.
+
+    If *network_name* is not provided, auto-detect a matching network config
+    based on the hardware name (e.g. "Ascend 910C" → "HCCS+RoCE (910C)").
+    """
     stem = _HW_TEMPLATES.get(hw_name)
     if not stem:
         raise HTTPException(status_code=400, detail=f"Unknown hardware: {hw_name}")
-    return load_hardware_config(str(_CONFIGS_DIR / "hardware" / f"{stem}.yaml"))
+    hw = load_hardware_config(str(_CONFIGS_DIR / "hardware" / f"{stem}.yaml"))
+
+    # Auto-detect network if not explicitly provided
+    if not network_name:
+        hw_key = stem.replace("ascend_", "").replace("cloudmatrix_", "")
+        for net_name, net_stem in _NETWORK_TEMPLATES.items():
+            if hw_key in net_stem:
+                network_name = net_name
+                break
+
+    if network_name:
+        net_stem = _NETWORK_TEMPLATES.get(network_name)
+        if net_stem:
+            net_data = _load_yaml_raw(_CONFIGS_DIR / "network" / f"{net_stem}.yaml")
+            tiers = net_data.get("tiers", [])
+            intra = next((t for t in tiers if t.get("name") == "intra_node"), tiers[0] if tiers else {})
+            inter = next((t for t in tiers if t.get("name") == "inter_node"), tiers[-1] if len(tiers) > 1 else {})
+            hw.intra_node_bw_gb_s = intra.get("bandwidth_gb_s", hw.intra_node_bw_gb_s)
+            hw.intra_node_latency_us = intra.get("latency_us", hw.intra_node_latency_us)
+            hw.inter_node_bw_gb_s = inter.get("bandwidth_gb_s", hw.inter_node_bw_gb_s)
+            hw.inter_node_latency_us = inter.get("latency_us", hw.inter_node_latency_us)
+            hw.devices_per_node = net_data.get("devices_per_node", hw.devices_per_node)
+
+    return hw
 
 
 def _build_parallelism(p: ParallelismInput) -> ParallelismConfig:
@@ -306,10 +349,10 @@ def _build_parallelism(p: ParallelismInput) -> ParallelismConfig:
     )
 
 
-def _build_rl_config(r: RLInput) -> RLConfig:
+def _build_rl_config(r: WorkloadInput) -> WorkloadConfig:
     std = r.std_response_len if r.std_response_len and r.std_response_len > 0 else None
     mtp = r.mtp_acceptance_len if r.use_speculative_decoding else None
-    return RLConfig(
+    return WorkloadConfig(
         group_size=r.group_size,
         avg_prompt_len=r.avg_prompt_len,
         avg_response_len=r.avg_response_len,
@@ -319,11 +362,8 @@ def _build_rl_config(r: RLInput) -> RLConfig:
         gradient_accumulation_steps=r.gradient_accumulation_steps,
         train_batch_size=r.train_batch_size,
         gen_batch_size=r.gen_batch_size,
-        algorithm=r.algorithm,
-        ppo_epochs=r.ppo_epochs,
         reward_model=r.reward_model,
         colocated=r.colocated,
-        online_rollout=r.online_rollout,
         reference_model=r.reference_model,
         ref_offload_cpu=r.ref_offload_cpu,
         use_speculative_decoding=r.use_speculative_decoding,
@@ -400,29 +440,15 @@ def _layer_to_dict(layer: LayerConfig) -> dict:
     }
 
 
-def _ve_to_dict(ve: VisionEncoderConfig) -> dict:
-    """Convert a VisionEncoderConfig to a JSON-serializable dict."""
-    return {
-        "hidden_size": ve.hidden_size,
-        "num_layers": ve.num_layers,
-        "num_heads": ve.num_heads,
-        "num_kv_heads": ve.num_kv_heads,
-        "head_dim": ve.head_dim,
-        "intermediate_size": ve.intermediate_size,
-        "ffn": ve.ffn,
-        "anyres_max_pixels": ve.anyres_max_pixels,
-        "patch_size": ve.patch_size,
-        "temporal_patch_size": ve.temporal_patch_size,
-        "merge_size": ve.merge_size,
-        "mm_vision_token_down_size": ve.mm_vision_token_down_size,
-        "image_seq_len": ve.image_seq_len(),
-    }
-
-
 def _compute_layers_summary(mc: ModelConfig) -> str | None:
     """Compute a human-readable layers summary for mixed-layer models.
 
     Returns None for uniform-layer models (single default_layer).
+
+    MoE groups include expert params for accurate reconstruction:
+      "4x GQA+SwiGLU, 47x GQA+MoE E80/K8/SE1/EI1280/SI2560"
+    where E=num_experts, K=top_k, SE=num_shared_experts,
+    EI=expert_intermediate_size, SI=shared_intermediate_size.
     """
     if not mc.layers:
         return None
@@ -434,7 +460,15 @@ def _compute_layers_summary(mc: ModelConfig) -> str | None:
         while j < len(mc.layers) and _layer_signature(mc.layers[j]) == _layer_signature(layer):
             j += 1
         count = j - i
-        ffn_desc = f"{layer.ffn}" + (f" E{layer.num_experts}" if layer.ffn == "MoE" else "")
+        if layer.ffn == "MoE":
+            ffn_desc = (
+                f"MoE E{layer.num_experts}/K{layer.top_k}"
+                f"/SE{layer.num_shared_experts}"
+                f"/EI{layer.expert_intermediate_size}"
+                f"/SI{layer.shared_intermediate_size}"
+            )
+        else:
+            ffn_desc = layer.ffn
         parts.append(f"{count}x {layer.attention}+{ffn_desc}")
         i = j
     return ", ".join(parts)
@@ -453,18 +487,41 @@ def _layer_signature(layer: LayerConfig) -> tuple:
 
 @app.get("/api/presets")
 def get_presets():
-    """Load all preset YAMLs from configs/presets/, return as dict keyed by name."""
-    import yaml
-
+    """Load all runtime YAMLs from configs/runtime/, resolve references, return as dict."""
     presets = {}
-    presets_dir = _CONFIGS_DIR / "presets"
-    if presets_dir.exists():
-        for yaml_file in sorted(presets_dir.glob("*.yaml")):
+    runtime_dir = _CONFIGS_DIR / "runtime"
+    if runtime_dir.exists():
+        for yaml_file in sorted(runtime_dir.glob("*.yaml")):
             if yaml_file.name.startswith("_"):
                 continue
-            with open(yaml_file, encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-            presets[data.get("name", yaml_file.stem)] = data
+            data = _load_yaml_raw(yaml_file)
+            name = data.get("name", yaml_file.stem)
+
+            # Resolve model reference: string → load from models/
+            model_ref = data.get("model")
+            if isinstance(model_ref, str):
+                model_stem = _MODEL_TEMPLATES.get(model_ref)
+                if model_stem:
+                    model_path = _CONFIGS_DIR / "models" / f"{model_stem}.yaml"
+                    if model_path.exists():
+                        mc = load_model_config(str(model_path))
+                        layer = mc.default_layer or (mc.layers[0] if mc.layers else LayerConfig())
+                        model_entry = {
+                            "name": mc.name,
+                            "hidden_size": mc.hidden_size,
+                            "vocab_size": mc.vocab_size,
+                            "num_layers": mc.num_layers,
+                            "dtype": mc.dtype,
+                            "layer": _layer_to_dict(layer),
+                        }
+                        if mc.auxiliary:
+                            model_entry["auxiliary"] = mc.auxiliary
+                        layers_summary = _compute_layers_summary(mc)
+                        if layers_summary:
+                            model_entry["layers_summary"] = layers_summary
+                        data["model"] = model_entry
+
+            presets[name] = data
     return {"presets": presets}
 
 
@@ -490,8 +547,6 @@ def get_models():
                 "dtype": mc.dtype,
                 "layer": _layer_to_dict(layer),
             }
-            if mc.vision_encoder:
-                entry["vision_encoder"] = _ve_to_dict(mc.vision_encoder)
             if mc.auxiliary:
                 entry["auxiliary"] = mc.auxiliary
             layers_summary = _compute_layers_summary(mc)
@@ -508,19 +563,154 @@ def get_hardware():
         yaml_path = _CONFIGS_DIR / "hardware" / f"{stem}.yaml"
         if yaml_path.exists():
             hw = load_hardware_config(str(yaml_path))
-            profiles[display_name] = {
-                "devices_per_node": hw.devices_per_node,
+            entry = {
                 "hbm_gb": hw.hbm_capacity_gb,
                 "tflops_bf16": hw.peak_tflops_bf16,
             }
+            # Populate devices_per_node from the matching network config
+            for net_name, net_stem in _NETWORK_TEMPLATES.items():
+                net_path = _CONFIGS_DIR / "network" / f"{net_stem}.yaml"
+                if net_path.exists():
+                    net_data = _load_yaml_raw(net_path)
+                    # Match by substring (e.g. "910C" in network name matches "910C" hardware)
+                    hw_key = stem.replace("ascend_", "").replace("cloudmatrix_", "")
+                    if hw_key in net_stem:
+                        entry["devices_per_node"] = net_data.get("devices_per_node", 8)
+                        break
+            if "devices_per_node" not in entry:
+                entry["devices_per_node"] = hw.devices_per_node
+            profiles[display_name] = entry
     return {"profiles": profiles}
+
+
+@app.get("/api/network")
+def get_network():
+    """Load all network YAMLs from configs/network/, return as dict keyed by name."""
+    profiles = {}
+    for display_name, stem in _NETWORK_TEMPLATES.items():
+        yaml_path = _CONFIGS_DIR / "network" / f"{stem}.yaml"
+        if yaml_path.exists():
+            data = _load_yaml_raw(yaml_path)
+            tiers = data.get("tiers", [])
+            profiles[display_name] = {
+                "devices_per_node": data.get("devices_per_node", 8),
+                "tiers": tiers,
+            }
+    return {"profiles": profiles}
+
+
+@app.get("/api/runtime")
+def get_runtime():
+    """Load all runtime YAMLs from configs/runtime/, return as dict keyed by name."""
+    profiles = {}
+    for display_name, stem in _RUNTIME_TEMPLATES.items():
+        yaml_path = _CONFIGS_DIR / "runtime" / f"{stem}.yaml"
+        if yaml_path.exists():
+            data = _load_yaml_raw(yaml_path)
+            profiles[display_name] = data
+    return {"profiles": profiles}
+
+
+def _predict_inference(req: PredictRequest):
+    """Inference scenario: prefill + decode generation only."""
+    model_cfg = _build_model_config(req.model)
+    hw_cfg = _build_hw_config(req.hardware, req.network)
+    rl_cfg = _build_rl_config(req.rl)
+    # The single parallelism block edited in the UI maps to generation.
+    gen_par_in = req.gen_parallelism or req.parallelism
+    gen_par = _build_parallelism(gen_par_in)
+
+    perf = LLMPerformanceModel(model_cfg, hw_cfg)
+    r = perf.derive_inference(req.total_devices, rl_cfg, gen_par)
+    topo = _topology_data(gen_par_in, hw_cfg, model_cfg.num_layers)
+
+    return {
+        "scenario": "inference",
+        "kpis": {
+            "gen_tps_target": round(r["gen_tps_target"], 0),
+            "gen_samples_per_sec": round(r["gen_samples_per_sec"], 3),
+            "gen_time_seconds": round(r["gen_time_seconds"], 2),
+            "prefill_seconds": round(r["prefill_seconds"], 3),
+            "decode_seconds": round(r["decode_seconds"], 2),
+            "decode_ms_per_token": round(r["decode_ms_per_token"], 3),
+            "kv_cache_gb": round(r["kv_cache_gb"], 2),
+            "feasible": r["gen_feasible"],
+        },
+        "memory": {
+            "gen_weight_gb": round(r["gen_weight_gb"], 2),
+            "kv_cache_gb": round(r["kv_cache_gb"], 2),
+            "total_gen_gb": round(r["total_gen_gb"], 2),
+            "usable_hbm_gb": round(r["usable_hbm_gb"], 2),
+            "gen_feasible": r["gen_feasible"],
+        },
+        "timeline": {
+            "prefill_seconds": round(r["prefill_seconds"], 3),
+            "decode_seconds": round(r["decode_seconds"], 2),
+            "gen_seconds": round(r["gen_time_seconds"], 2),
+        },
+        "topology": {
+            "ranks": topo,
+            "tp": gen_par_in.tp,
+            "pp": gen_par_in.pp,
+            "dp": gen_par_in.dp,
+            "ep": gen_par_in.ep,
+        },
+    }
+
+
+def _predict_pretraining(req: PredictRequest):
+    """Pretraining scenario: one fwd+bwd+optimizer step, no RL sub-steps."""
+    model_cfg = _build_model_config(req.model)
+    hw_cfg = _build_hw_config(req.hardware, req.network)
+    rl_cfg = _build_rl_config(req.rl)
+    train_par_in = req.parallelism
+    train_par = _build_parallelism(train_par_in)
+
+    perf = LLMPerformanceModel(model_cfg, hw_cfg)
+    r = perf.derive_pretraining(req.total_devices, rl_cfg, train_par)
+    topo = _topology_data(train_par_in, hw_cfg, model_cfg.num_layers)
+
+    return {
+        "scenario": "pretraining",
+        "kpis": {
+            "step_time_seconds": round(r["step_time_seconds"], 2),
+            "train_tps_target": round(r["train_tps_target"], 0),
+            "train_samples_per_sec": round(r["train_samples_per_sec"], 3),
+            "total_train_gb": round(r["total_train_gb"], 2),
+            "feasible": r["train_feasible"],
+        },
+        "memory": {
+            "weight_gb": round(r["weight_gb"], 2),
+            "grad_gb": round(r["grad_gb"], 2),
+            "optimizer_gb": round(r["optimizer_gb"], 2),
+            "activation_peak_gb": round(r["activation_peak_gb"], 2),
+            "total_train_gb": round(r["total_train_gb"], 2),
+            "usable_hbm_gb": round(r["usable_hbm_gb"], 2),
+            "train_feasible": r["train_feasible"],
+        },
+        "timeline": {
+            "breakdown": {k: round(v, 3) for k, v in r["breakdown"].items()},
+        },
+        "topology": {
+            "ranks": topo,
+            "tp": train_par_in.tp,
+            "pp": train_par_in.pp,
+            "dp": train_par_in.dp,
+            "ep": train_par_in.ep,
+        },
+    }
 
 
 @app.post("/api/predict")
 def predict(req: PredictRequest):
     try:
+        if req.scenario == "inference":
+            return _predict_inference(req)
+        if req.scenario == "pretraining":
+            return _predict_pretraining(req)
+
         model_cfg = _build_model_config(req.model)
-        hw_cfg = _build_hw_config(req.hardware)
+        hw_cfg = _build_hw_config(req.hardware, req.network)
         train_par = _build_parallelism(req.parallelism)
         rl_cfg = _build_rl_config(req.rl)
 
@@ -538,7 +728,7 @@ def predict(req: PredictRequest):
             ref_dp = req.total_devices // req.parallelism.tp if req.parallelism.tp > 0 else 1
             ref_par = ParallelismConfig(tp=req.parallelism.tp, pp=1, dp=ref_dp)
 
-        perf = RLPerformanceModel(model_cfg, hw_cfg)
+        perf = LLMPerformanceModel(model_cfg, hw_cfg)
         report = perf.derive_targets(req.total_devices, rl_cfg, gen_par, train_par, ref_par)
         mem = report.memory
 
@@ -549,6 +739,7 @@ def predict(req: PredictRequest):
         topo = _topology_data(req.parallelism, hw_cfg, model_cfg.num_layers)
 
         return {
+            "scenario": "post_training",
             "kpis": {
                 "step_time_seconds": round(report.step_time_seconds, 1),
                 "gen_tps_target": round(report.gen_tps_target, 0),
@@ -563,6 +754,7 @@ def predict(req: PredictRequest):
             },
             "memory": {
                 "weight_gb": round(mem.weight_gb, 2),
+                "grad_gb": round(mem.grad_gb, 2),
                 "gen_weight_gb": round(mem.gen_weight_gb, 2),
                 "ref_weight_gb": round(mem.ref_weight_gb, 2),
                 "optimizer_gb": round(mem.optimizer_gb, 2),
@@ -571,10 +763,6 @@ def predict(req: PredictRequest):
                 "ref_activation_peak_gb": round(mem.ref_activation_peak_gb, 2),
                 "reward_model_gb": round(mem.reward_model_gb, 2),
                 "kv_cache_gb": round(mem.kv_cache_gb, 2),
-                "ve_weight_gb": round(mem.ve_weight_gb, 2),
-                "ve_optimizer_gb": round(mem.ve_optimizer_gb, 2),
-                "ve_weight_gen_gb": round(mem.ve_weight_gen_gb, 2),
-                "ve_weight_ref_gb": round(mem.ve_weight_ref_gb, 2),
                 "total_train_gb": round(mem.total_train_gb, 2),
                 "total_gen_gb": round(mem.total_gen_gb, 2),
                 "total_ref_gb": round(mem.total_ref_gb, 2),
@@ -610,9 +798,9 @@ def predict(req: PredictRequest):
 def search(req: SearchRequest):
     try:
         model_cfg = _build_model_config(req.model)
-        hw_cfg = _build_hw_config(req.hardware)
+        hw_cfg = _build_hw_config(req.hardware, req.network)
         rl_cfg = _build_rl_config(req.rl)
-        perf = RLPerformanceModel(model_cfg, hw_cfg)
+        perf = LLMPerformanceModel(model_cfg, hw_cfg)
 
         if req.search.mode == "pareto":
             sr = pareto_search(perf, hw_cfg, rl_cfg, req.search.device_counts)
@@ -726,8 +914,6 @@ def hf_import(req: HFImportRequest):
             "dtype": mc.dtype,
             "layer": _layer_to_dict(layer),
         }
-        if mc.vision_encoder:
-            result["vision_encoder"] = _ve_to_dict(mc.vision_encoder)
         if mc.auxiliary:
             result["auxiliary"] = mc.auxiliary
         layers_summary = _compute_layers_summary(mc)

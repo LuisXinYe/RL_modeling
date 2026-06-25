@@ -1,7 +1,7 @@
 # Configuration Reference
 
-This document describes every configuration class used by rl-perf.
-All configs are defined in `src/rl_perf/config.py` and loaded from YAML files.
+This document describes every configuration class used by llm-perf.
+All configs are defined in `src/llm_perf/config.py` and loaded from YAML files.
 
 ---
 
@@ -159,7 +159,7 @@ See [calibration-guide.md](calibration-guide.md) for how to measure and tune the
 
 ---
 
-## RLConfig
+## WorkloadConfig
 
 RL training workload parameters.
 
