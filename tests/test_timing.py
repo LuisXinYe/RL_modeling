@@ -89,20 +89,14 @@ def test_effective_response_len_no_std_no_max():
 # ---------------------------------------------------------------------------
 
 
-def test_step_time_separated():
-    # Separated: max over phases + startup overhead. t_ref = 0.
-    t = step_time(t_gen=20.0, t_train=15.0, t_ref=0.0, startup_overhead=0.5)
-    assert t == pytest.approx(20.5, rel=1e-9)
-
-
-def test_step_time_colocated():
-    # Colocated: phases run sequentially → gen + ref + train (+ reshard).
-    t = step_time(t_gen=10.0, t_train=15.0, t_ref=0.0, colocated=True)
+def test_step_time_serial():
+    # Phases run serially on the shared pool: gen + ref + train.
+    t = step_time(t_gen=10.0, t_train=15.0, t_ref=0.0)
     assert t == pytest.approx(25.0)
 
 
-def test_step_time_colocated_with_reshard():
-    t = step_time(t_gen=10.0, t_train=15.0, t_ref=2.0, colocated=True, t_reshard=1.0)
+def test_step_time_with_reshard():
+    t = step_time(t_gen=10.0, t_train=15.0, t_ref=2.0, t_reshard=1.0)
     assert t == pytest.approx(28.0)  # 10 + 2 + 15 + 1
 
 

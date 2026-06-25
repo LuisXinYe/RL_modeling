@@ -89,9 +89,6 @@ def format_table(report: TargetReport) -> str:
         reasons.append("OOM")
     status_str = "FEASIBLE" if not reasons else f"NOT FEASIBLE: {' + '.join(reasons)}"
     lines = [
-        "=" * 60,
-        "          LLM Performance Report",
-        "=" * 60,
         f" Step time:         {report.step_time_seconds:.1f} s  [{status_str}]",
         "-" * 60,
         " Generation:",

@@ -369,8 +369,10 @@ def op_mla_attention(
 
     # Weight bytes: all projection matrices
     # Q down (d * d_c_q) + Q up (d_c_q * d) + KV down (d * d_c) + K up (d_c * d) + V up (d_c * d) + O (d * d)
+    # + decoupled RoPE projections: Q rope (d * num_heads * r) + K rope (d * r, shared)
     weight_b = (
         d * d_c_q + d_c_q * d + d * d_c + d_c * d + d_c * d + d * d
+        + d * num_heads * r + d * r
     ) * dtype_bytes
 
     mem_rw = weight_b + query_tokens * d * dtype_bytes + query_tokens * d * dtype_bytes
@@ -412,6 +414,7 @@ def op_dsa_attention(
     phase: Phase,
     kv_len: int | None = None,
     dtype_bytes: int = 2,
+    rope_dim: int = 0,
 ) -> OpCost:
     """DSA (DeepSeek Sparse Attention) operator cost model.
 
@@ -450,6 +453,7 @@ def op_dsa_attention(
     idx_hd = index_head_dim
     topk = index_topk
     W = window_size
+    r = rope_dim
     use_index = compress_ratio == 4  # Lightning Index only for C4A
 
     if phase == Phase.DECODE:
@@ -475,6 +479,8 @@ def op_dsa_attention(
     # O proj_b: Ng*olr -> d
     Ng = max(1, Nq // g)  # heads per group
     proj_flops += 2 * (Ng * olr) * H * query_tokens
+    # Decoupled RoPE projection (MLA-style): Q rope (num_heads * r) + K rope (r)
+    proj_flops += 2 * H * Nq * r * query_tokens
 
     # ---- 2. KV Compression FLOPs ----
     comp_flops = 0.0
@@ -557,6 +563,8 @@ def op_dsa_attention(
         + H * kv_dim                      # KV (MQA)
         + (Nq * d_h) * olr               # O proj_a
         + (Ng * olr) * H                  # O proj_b
+        + H * Nq * r                      # Q decoupled RoPE proj
+        + H * r                           # K decoupled RoPE proj (shared)
     ) * dtype_bytes
 
     # Index IQ weight (C4A only)
@@ -570,6 +578,8 @@ def op_dsa_attention(
     # compressed parts read at L/compress_ratio length.
     if phase == Phase.DECODE:
         kv_read = batch * min(L, W) * 2 * kv_dim * dtype_bytes if W > 0 else 0.0
+        # Decoupled RoPE key (uncompressed, full context length, single shared head)
+        kv_read += batch * L * r * dtype_bytes
         if compress_ratio > 1 and c_kv > 0:
             comp_len = L // compress_ratio
             kv_read += batch * comp_len * c_kv * dtype_bytes

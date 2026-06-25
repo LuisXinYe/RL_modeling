@@ -121,6 +121,7 @@
                     <option value="GQA" selected>GQA</option>
                     <option value="MLA">MLA</option>
                     <option value="SWA">SWA</option>
+                    <option value="DSA">DSA</option>
                   </select>
                 </div>
                 <div class="field">
@@ -183,6 +184,52 @@
                 <div class="field">
                   <label class="field-label" for="window-size">Window Size</label>
                   <input class="field-input" type="number" id="window-size" value="0">
+                </div>
+              </div>
+
+              <!-- DSA conditional fields (DeepSeek Sparse Attention) -->
+              <div class="conditional-fields hidden" id="dsa-fields">
+                <div class="field-grid cols-3">
+                  <div class="field">
+                    <label class="field-label" for="compress-ratio">Compress Ratio</label>
+                    <input class="field-input" type="number" id="compress-ratio" value="0">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="compress-c-kv">Compress c_KV</label>
+                    <input class="field-input" type="number" id="compress-c-kv" value="0">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="compress-coeff">Compress Coeff</label>
+                    <input class="field-input" type="number" id="compress-coeff" value="0" step="0.1">
+                  </div>
+                </div>
+                <div class="field-grid cols-3">
+                  <div class="field">
+                    <label class="field-label" for="index-n-heads">Index Heads</label>
+                    <input class="field-input" type="number" id="index-n-heads" value="0">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="index-head-dim">Index Head Dim</label>
+                    <input class="field-input" type="number" id="index-head-dim" value="0">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="index-topk">Index Top-K</label>
+                    <input class="field-input" type="number" id="index-topk" value="0">
+                  </div>
+                </div>
+                <div class="field-grid cols-3">
+                  <div class="field">
+                    <label class="field-label" for="q-lora-rank">Q LoRA Rank</label>
+                    <input class="field-input" type="number" id="q-lora-rank" value="0">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="o-lora-rank">O LoRA Rank</label>
+                    <input class="field-input" type="number" id="o-lora-rank" value="0">
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="o-groups">O Groups</label>
+                    <input class="field-input" type="number" id="o-groups" value="0">
+                  </div>
                 </div>
               </div>
 
@@ -341,6 +388,7 @@
                       <label class="field-label" for="train-pp-schedule">PP Sched</label>
                       <select class="field-select" id="train-pp-schedule">
                         <option value="1f1b" selected>1f1b</option>
+                        <option value="gpipe">gpipe</option>
                         <option value="interleaved">interleaved</option>
                         <option value="zero_bubble">zero_bubble</option>
                       </select>
@@ -446,7 +494,7 @@
           <button class="accordion-trigger" aria-expanded="false">
             <span class="accordion-dot dot-default"></span>
             <span class="accordion-title" id="rl-section-title">RL Training</span>
-            <span class="accordion-summary" id="rl-summary">10k prompts &middot; grp=8 &middot; separate &middot; ref model</span>
+            <span class="accordion-summary" id="rl-summary">batch=36 &middot; grp=8 &middot; ref model</span>
             <svg class="accordion-chevron" width="16" height="16" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
           </button>
           <div class="accordion-body">
@@ -524,19 +572,10 @@
               <!-- Deployment (post-training only) -->
               <fieldset class="field-group" data-scn="post_training">
                 <legend class="field-label">Deployment</legend>
-                <div class="field-grid cols-2">
-                  <div class="field">
-                    <label class="field-label" for="deploy-mode">Mode</label>
-                    <select class="field-select" id="deploy-mode">
-                      <option value="separate" selected>Separate</option>
-                      <option value="colocated">Colocated</option>
-                    </select>
-                  </div>
-                  <div class="field">
-                    <label class="field-label field-label-inline">
-                      <input type="checkbox" id="ref-model" checked> Reference Model
-                    </label>
-                  </div>
+                <div class="field">
+                  <label class="field-label field-label-inline">
+                    <input type="checkbox" id="ref-model" checked> Reference Model
+                  </label>
                 </div>
                 <div class="field">
                   <label class="field-label field-label-inline">

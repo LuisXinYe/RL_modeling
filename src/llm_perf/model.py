@@ -7,9 +7,8 @@ from llm_perf.post_training import (
     ref_time,
     _reshard_time,
 )
-from llm_perf.builder import _split_stages, build_generation_step
-from llm_perf.inference import effective_response_len
-from llm_perf.simulator import simulate
+from llm_perf.builder import _split_stages
+from llm_perf.inference import effective_response_len, prefill_decode_times
 from llm_perf.report import MemoryProfile, TargetReport
 
 
@@ -68,31 +67,18 @@ class LLMPerformanceModel:
             self.model, self.hw, ref_parallel, rl_cfg
         )
 
-        # Startup overhead: full gen batch time (prefill + decode)
-        startup = t_gen
-
-        # Resharding time: when parallelism changes between phases,
-        # model weights must be redistributed across devices.
-        # Colocated execution order: gen → ref → train
-        t_reshard_gen_ref = 0.0
-        t_reshard_ref_train = 0.0
-        if rl_cfg.colocated:
-            t_reshard_gen_ref = _reshard_time(
-                self.model, self.hw, gen_parallel, ref_parallel
-            )
-            t_reshard_ref_train = _reshard_time(
-                self.model, self.hw, ref_parallel, train_parallel
-            )
+        # Resharding time: phases run serially on the shared device pool
+        # (gen → ref → train); when the parallelism layout changes between
+        # phases, model weights must be redistributed across devices.
+        t_reshard_gen_ref = _reshard_time(
+            self.model, self.hw, gen_parallel, ref_parallel
+        )
+        t_reshard_ref_train = _reshard_time(
+            self.model, self.hw, ref_parallel, train_parallel
+        )
         t_reshard = t_reshard_gen_ref + t_reshard_ref_train
 
-        t_step = step_time(
-            t_gen,
-            t_train,
-            t_ref,
-            startup,
-            colocated=rl_cfg.colocated,
-            t_reshard=t_reshard,
-        )
+        t_step = step_time(t_gen, t_train, t_ref, t_reshard=t_reshard)
 
         # Compute TPS targets (single-rank perspective)
         # Each rank processes local_seq_len = seq_len / cp tokens due to CP.
@@ -253,9 +239,25 @@ class LLMPerformanceModel:
                     )
             total_bytes += keep
 
-        # PP 1F1B: stage 0 keeps up to `pp` micro-batches in flight (warmup depth).
-        if p.pp > 1 and p.pp_schedule != "interleaved":
-            total_bytes *= p.pp
+        # PP activation scaling by schedule (GPipe and 1F1B have the SAME bubble
+        # time but very different activation memory):
+        #   - GPipe: all M micro-batches are forwarded before any backward, so
+        #     stage 0 holds all M micro-batches' activations → peak ∝ M.
+        #   - 1F1B / zero-bubble / interleaved: forward and backward are
+        #     interleaved, so stage 0 only holds the warmup depth ≈ min(pp, M).
+        if p.pp > 1:
+            micro_batches = max(
+                1,
+                rl_cfg.train_batch_size
+                / max(1, rl_cfg.gradient_accumulation_steps)
+                / max(1, rl_cfg.train_micro_batch_size)
+                / max(1, p.dp),
+            )
+            if p.pp_schedule == "gpipe":
+                factor = micro_batches
+            else:  # 1f1b, zero_bubble, interleaved
+                factor = min(p.pp, micro_batches)
+            total_bytes *= factor
 
         # Activation offload streams all but roughly one layer to CPU.
         if p.activation_offload and stage_layers:
@@ -288,6 +290,11 @@ class LLMPerformanceModel:
                     2 * swa_kv_heads_per_device * layer.head_dim * self.model.dtype_bytes
                 )
                 kv_total += swa_kv_per_token * gen_batch_per_device * min(max_kv_seq, layer.window_size)
+                # Decoupled RoPE key (MLA-style): uncompressed, kept for the full
+                # context length, single shared head.
+                if layer.rope_dim > 0:
+                    rope_kv_per_token = layer.rope_dim * self.model.dtype_bytes
+                    kv_total += rope_kv_per_token * gen_batch_per_device * max_kv_seq
                 # Compressed KV cache (only for ratio > 1)
                 if layer.compress_ratio > 1:
                     comp_seq = max_kv_seq // layer.compress_ratio
@@ -332,9 +339,9 @@ class LLMPerformanceModel:
 
         gen_sim, t_gen = generation_time(self.model, self.hw, gen_parallel, rl_cfg)
 
-        # Prefill / decode split for visualization (mirrors inference.generation_time).
-        prefill_ops, _ = build_generation_step(self.model, self.hw, gen_parallel, rl_cfg)
-        t_prefill = simulate(prefill_ops).wall_clock_time
+        # Prefill / decode split for visualization (slowest-stage prefill time;
+        # see inference.prefill_decode_times()).
+        t_prefill, _, _ = prefill_decode_times(self.model, self.hw, gen_parallel, rl_cfg)
         t_decode = max(t_gen - t_prefill, 0.0)
         eff_len = effective_response_len(
             avg=rl_cfg.avg_response_len,

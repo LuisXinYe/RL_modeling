@@ -146,23 +146,21 @@ def step_time(
     t_gen: float,
     t_train: float,
     t_ref: float,
-    startup_overhead: float = 0,
-    colocated: bool = False,
     t_reshard: float = 0,
 ) -> float:
-    """Compute wall-clock time.
+    """Wall-clock time for one RL step.
+
+    Phases run serially on the shared device pool
+    (generation → reference → training), with resharding between phases
+    whenever the parallelism layout changes.
 
     Args:
         t_gen: Generation phase time.
         t_train: Training phase time.
         t_ref: Reference phase time.
-        startup_overhead: Startup overhead (non-colocated only).
-        colocated: If True, phases run sequentially on same devices.
-        t_reshard: Resharding time between phases (colocated only).
+        t_reshard: Total resharding time between phases.
     """
-    if colocated:
-        return t_gen + t_ref + t_train + t_reshard
-    return max(t_gen, t_train, t_ref) + startup_overhead
+    return t_gen + t_ref + t_train + t_reshard
 
 
 def _reshard_time(
@@ -219,6 +217,7 @@ def _reshard_time(
             o_params = layer_cfg.num_heads * layer_cfg.head_dim * d
             total_weight_bytes += (q_params + kv_params + o_params) * dtype_bytes
         elif layer_cfg.attention == "MLA":
+            # incl. decoupled RoPE projections: Q rope (d*num_heads*rope_dim) + K rope (d*rope_dim)
             total_weight_bytes += (
                 d * layer_cfg.query_compression_dim
                 + layer_cfg.query_compression_dim * d
@@ -226,12 +225,16 @@ def _reshard_time(
                 + layer_cfg.kv_compression_dim * d
                 + layer_cfg.kv_compression_dim * d
                 + d * d
+                + d * layer_cfg.num_heads * layer_cfg.rope_dim
+                + d * layer_cfg.rope_dim
             ) * dtype_bytes
         elif layer_cfg.attention == "DSA":
             q_params = d * layer_cfg.q_lora_rank + layer_cfg.q_lora_rank * layer_cfg.num_heads * layer_cfg.head_dim
             kv_params = d * layer_cfg.head_dim  # MQA
             o_params = layer_cfg.num_heads * layer_cfg.head_dim * layer_cfg.o_lora_rank + layer_cfg.o_groups * layer_cfg.o_lora_rank * d
-            total_weight_bytes += (q_params + kv_params + o_params) * dtype_bytes
+            # decoupled RoPE projections: Q rope (d*num_heads*rope_dim) + K rope (d*rope_dim)
+            rope_params = d * layer_cfg.num_heads * layer_cfg.rope_dim + d * layer_cfg.rope_dim
+            total_weight_bytes += (q_params + kv_params + o_params + rope_params) * dtype_bytes
             if layer_cfg.compress_ratio == 4:
                 total_weight_bytes += layer_cfg.q_lora_rank * layer_cfg.index_n_heads * layer_cfg.index_head_dim * dtype_bytes
 
@@ -276,9 +279,8 @@ def _reshard_time(
     # Communication volume: each device sends/receives its shard.
     # Total data movement ≈ total_weight_bytes (each byte moves once).
     # Use the number of devices involved in the resharding group.
-    # In colocated mode, the resharding group is the union of src and dst
-    # device groups. Since they share the same physical devices, we use
-    # the max of the two.
+    # Phases share the same physical device pool, so the resharding group is
+    # the union of the src and dst layouts; we use the max of the two.
     n_devices = max(src_parallel.total_devices, dst_parallel.total_devices)
 
     # Determine if communication is intra-node or inter-node

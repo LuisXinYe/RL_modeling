@@ -9,6 +9,7 @@ parallelism:
   tp: 4
   pp: 2
   ep: 4
+  dp: 8
   cp: 1
   cp_type: ring
   sp: false
@@ -28,7 +29,6 @@ rl:
   train_batch_size: 36
   gradient_accumulation_steps: 2
   gen_batch_size: 32
-  colocated: false
   reference_model: true
   ref_offload_cpu: true
   use_speculative_decoding: false

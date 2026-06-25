@@ -323,6 +323,7 @@ def build_layer_ops(
             phase=phase,
             kv_len=kv_len,
             dtype_bytes=dtype_bytes,
+            rope_dim=layer_cfg.rope_dim,
         )
     else:
         raise ValueError(f"Unknown attention type: {attn_type}")

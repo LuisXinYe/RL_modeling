@@ -38,6 +38,15 @@ _MODEL_TEMPLATES = {
     "DeepSeekV3-671B": "deepseekv3_671b",
 }
 
+# Alias the model names used in runtime YAMLs (which follow the demo naming)
+# to their model stems, so /api/presets can resolve them even when they differ
+# from the _MODEL_TEMPLATES keys used by the model-template dropdown.
+_MODEL_ALIASES = {
+    "DeepSeek-V3-671B": "deepseekv3_671b",
+    "DeepSeek-V4": "deepseekv4",
+    "Qwen3-235B-A22B": "qwen3_235b_moe",
+}
+
 _HW_TEMPLATES = {
     "Ascend 910B": "ascend_910b",
     "Ascend 910C": "ascend_910c",
@@ -82,6 +91,16 @@ class LayerInput(BaseModel):
     rope_dim: int = 0
     window_size: int = 0
     mhc_expansion: int = 4
+    # DSA (DeepSeek Sparse Attention) params
+    compress_ratio: int = 0
+    compress_c_kv: int = 0
+    compress_coeff: float = 0.0
+    index_n_heads: int = 0
+    index_head_dim: int = 0
+    index_topk: int = 0
+    q_lora_rank: int = 0
+    o_lora_rank: int = 0
+    o_groups: int = 0
 
 
 class ModelInput(BaseModel):
@@ -124,7 +143,6 @@ class WorkloadInput(BaseModel):
     train_batch_size: int = 36
     gen_batch_size: int = 64
     reward_model: bool = False
-    colocated: bool = True
     reference_model: bool = True
     ref_offload_cpu: bool = False
     use_speculative_decoding: bool = False
@@ -268,6 +286,15 @@ def _build_model_config(m: ModelInput) -> ModelConfig:
         rope_dim=m.layer.rope_dim,
         window_size=m.layer.window_size,
         mhc_expansion=m.layer.mhc_expansion,
+        compress_ratio=m.layer.compress_ratio,
+        compress_c_kv=m.layer.compress_c_kv,
+        compress_coeff=m.layer.compress_coeff,
+        index_n_heads=m.layer.index_n_heads,
+        index_head_dim=m.layer.index_head_dim,
+        index_topk=m.layer.index_topk,
+        q_lora_rank=m.layer.q_lora_rank,
+        o_lora_rank=m.layer.o_lora_rank,
+        o_groups=m.layer.o_groups,
     )
 
     # Build layers list from layers_summary if available (mixed-layer models)
@@ -363,7 +390,6 @@ def _build_rl_config(r: WorkloadInput) -> WorkloadConfig:
         train_batch_size=r.train_batch_size,
         gen_batch_size=r.gen_batch_size,
         reward_model=r.reward_model,
-        colocated=r.colocated,
         reference_model=r.reference_model,
         ref_offload_cpu=r.ref_offload_cpu,
         use_speculative_decoding=r.use_speculative_decoding,
@@ -437,6 +463,15 @@ def _layer_to_dict(layer: LayerConfig) -> dict:
         "rope_dim": layer.rope_dim,
         "window_size": layer.window_size,
         "mhc_expansion": layer.mhc_expansion,
+        "compress_ratio": layer.compress_ratio,
+        "compress_c_kv": layer.compress_c_kv,
+        "compress_coeff": layer.compress_coeff,
+        "index_n_heads": layer.index_n_heads,
+        "index_head_dim": layer.index_head_dim,
+        "index_topk": layer.index_topk,
+        "q_lora_rank": layer.q_lora_rank,
+        "o_lora_rank": layer.o_lora_rank,
+        "o_groups": layer.o_groups,
     }
 
 
@@ -500,7 +535,7 @@ def get_presets():
             # Resolve model reference: string → load from models/
             model_ref = data.get("model")
             if isinstance(model_ref, str):
-                model_stem = _MODEL_TEMPLATES.get(model_ref)
+                model_stem = _MODEL_TEMPLATES.get(model_ref) or _MODEL_ALIASES.get(model_ref)
                 if model_stem:
                     model_path = _CONFIGS_DIR / "models" / f"{model_stem}.yaml"
                     if model_path.exists():
@@ -778,7 +813,6 @@ def predict(req: PredictRequest):
                 "reshard_gen_ref_seconds": round(report.reshard_gen_ref_seconds, 2),
                 "reshard_ref_train_seconds": round(report.reshard_ref_train_seconds, 2),
                 "step_time_seconds": round(report.step_time_seconds, 1),
-                "colocated": req.rl.colocated,
             },
             "topology": {
                 "ranks": topo,

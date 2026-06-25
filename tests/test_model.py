@@ -160,7 +160,6 @@ def test_format_table(perf_model, rl_cfg, parallel_cfg):
     )
     table = format_table(report)
     assert isinstance(table, str)
-    assert "LLM Performance Report" in table
     assert "Step time" in table
     assert "Generation" in table
     assert "Training" in table
@@ -343,3 +342,24 @@ def test_pretraining_grad_offload_zeroes_gradient(perf_model, rl_cfg):
         64, rl_cfg, ParallelismConfig(tp=8, pp=1, dp=8, grad_offload=True)
     )
     assert off["grad_gb"] == 0
+
+
+def test_gpipe_holds_more_activation_than_1f1b(perf_model):
+    """GPipe keeps all M micro-batches' activations; 1F1B only the warmup depth.
+
+    With M=32 (train_batch 64 / mbs 1 / dp 2) and pp=4, GPipe holds 32 vs
+    1F1B's min(pp, M)=4 → GPipe activation ≈ 8x. zero_bubble ≈ 1F1B.
+    """
+    wl = WorkloadConfig(
+        group_size=4, train_batch_size=64,
+        train_micro_batch_size=1, gradient_accumulation_steps=1,
+    )
+
+    def act(sched):
+        return perf_model.derive_pretraining(
+            64, wl, ParallelismConfig(tp=4, pp=4, dp=2, pp_schedule=sched)
+        )["activation_peak_gb"]
+
+    a_1f1b, a_gpipe, a_zb = act("1f1b"), act("gpipe"), act("zero_bubble")
+    assert a_gpipe == pytest.approx(a_1f1b * 8, rel=0.01)
+    assert a_zb == pytest.approx(a_1f1b)

@@ -343,8 +343,11 @@ function updateConditionalFields() {
   const ffn = $('#ffn-type').value;
   const residual = $('#residual-type').value;
 
-  $('#mla-fields').classList.toggle('hidden', attn !== 'MLA');
-  $('#swa-fields').classList.toggle('hidden', attn !== 'SWA');
+  // DSA reuses the compression dims (MLA fields) and the window (SWA field),
+  // plus its own dsa-fields block.
+  $('#mla-fields').classList.toggle('hidden', attn !== 'MLA' && attn !== 'DSA');
+  $('#swa-fields').classList.toggle('hidden', attn !== 'SWA' && attn !== 'DSA');
+  $('#dsa-fields').classList.toggle('hidden', attn !== 'DSA');
   $('#moe-fields').classList.toggle('hidden', ffn !== 'MoE');
   $('#mhc-fields').classList.toggle('hidden', residual !== 'mHC');
 
@@ -397,14 +400,14 @@ function updateConditionalFields() {
 
 /* ── Auto-computed Fields ─────────────────────────────── */
 function initAutoComputed() {
-  // DP = total_devices / (TP * PP * EP * CP) for each phase
+  // DP = total_devices / (TP * PP * CP). EP shares the DP devices (experts are
+  // split within the data-parallel group), so it does NOT divide device count.
   const recomputeDP = (phase) => {
     const total = intVal('total-devices');
     const tp = intVal(`${phase}-tp`);
     const pp = intVal(`${phase}-pp`);
-    const ep = intVal(`${phase}-ep`);
     const cp = intVal(`${phase}-cp`);
-    const divisor = tp * pp * ep * cp;
+    const divisor = tp * pp * cp;
     const dp = divisor > 0 ? Math.max(1, Math.floor(total / divisor)) : total;
     $(`#${phase}-dp`).value = dp;
   };
@@ -462,8 +465,6 @@ function initAutoComputed() {
     markModified('hardware');
   });
 
-  // Deploy mode change
-  $('#deploy-mode').addEventListener('change', () => updateRLSummary());
   $('#ref-model').addEventListener('change', () => updateRLSummary());
 }
 
@@ -505,9 +506,8 @@ function updateHardwareSummary() {
 function updateRLSummary() {
   const trainBatch = intVal('train-batch-size');
   const group = $('#group-size').value;
-  const mode = $('#deploy-mode').value === 'colocated' ? 'colocated' : 'separate';
   const ref = $('#ref-model').checked ? 'ref model' : 'no ref';
-  $('#rl-summary').textContent = `batch=${trainBatch} \u00b7 grp=${group} \u00b7 ${mode} \u00b7 ${ref}`;
+  $('#rl-summary').textContent = `batch=${trainBatch} \u00b7 grp=${group} \u00b7 ${ref}`;
 }
 
 function updateSearchSummary() {
@@ -548,6 +548,16 @@ function resetModified() {
 }
 
 /* ── Config Loading ───────────────────────────────────── */
+/* Find the runtime preset (model + hardware + parallelism + RL, matching the
+   demo configs) for a model-template name. Preset keys carry a device suffix
+   like "DeepSeekV3-671B (128x 910C)", so match by exact name or "<name> ("
+   prefix — this makes selecting a model load the same config the demo uses. */
+function findPresetForModel(name) {
+  if (state.presets[name]) return state.presets[name];
+  const key = Object.keys(state.presets).find((k) => k.startsWith(name + ' ('));
+  return key ? state.presets[key] : null;
+}
+
 async function loadConfigs() {
   try {
     const [modelsResp, hwResp, presetsResp] = await Promise.all([
@@ -573,11 +583,7 @@ async function loadConfigs() {
     const firstPreset = Object.keys(state.presets)[0];
     if (firstPreset) {
       const templateVal = $('#model-template').value;
-      if (state.presets[templateVal]) {
-        applyPreset(state.presets[templateVal]);
-      } else {
-        applyPreset(state.presets[firstPreset]);
-      }
+      applyPreset(findPresetForModel(templateVal) || state.presets[firstPreset]);
       // Auto-run prediction on load
       await runAnalysis();
     } else {
@@ -590,6 +596,21 @@ async function loadConfigs() {
   } catch (e) {
     console.error('Failed to load configs:', e);
   }
+}
+
+/* Fill the DSA-specific form fields from a layer object (shared by template /
+   preset / HF loaders). Safe to call for non-DSA layers (values default to 0). */
+function applyDsaFields(layer) {
+  if (!layer) return;
+  $('#compress-ratio').value = layer.compress_ratio || 0;
+  $('#compress-c-kv').value = layer.compress_c_kv || 0;
+  $('#compress-coeff').value = layer.compress_coeff || 0;
+  $('#index-n-heads').value = layer.index_n_heads || 0;
+  $('#index-head-dim').value = layer.index_head_dim || 0;
+  $('#index-topk').value = layer.index_topk || 0;
+  $('#q-lora-rank').value = layer.q_lora_rank || 0;
+  $('#o-lora-rank').value = layer.o_lora_rank || 0;
+  $('#o-groups').value = layer.o_groups || 0;
 }
 
 function applyModelTemplate(name) {
@@ -620,6 +641,7 @@ function applyModelTemplate(name) {
     $('#rope-dim').value = t.layer.rope_dim || 0;
     $('#window-size').value = t.layer.window_size || 0;
     $('#mhc-expansion').value = t.layer.mhc_expansion || 4;
+    applyDsaFields(t.layer);
   }
 
   // Auxiliary
@@ -647,8 +669,9 @@ function initTemplateListener() {
   $('#model-template').addEventListener('change', async (e) => {
     const name = e.target.value;
     // If a full preset exists for this template, apply it and auto-run
-    if (state.presets[name]) {
-      applyPreset(state.presets[name]);
+    const preset = findPresetForModel(name);
+    if (preset) {
+      applyPreset(preset);
       await runAnalysis();
     } else {
       applyModelTemplate(name);
@@ -724,6 +747,15 @@ function buildPredictRequest() {
         rope_dim: intVal('rope-dim'),
         window_size: intVal('window-size'),
         mhc_expansion: intVal('mhc-expansion'),
+        compress_ratio: intVal('compress-ratio'),
+        compress_c_kv: intVal('compress-c-kv'),
+        compress_coeff: parseFloat($('#compress-coeff').value) || 0,
+        index_n_heads: intVal('index-n-heads'),
+        index_head_dim: intVal('index-head-dim'),
+        index_topk: intVal('index-topk'),
+        q_lora_rank: intVal('q-lora-rank'),
+        o_lora_rank: intVal('o-lora-rank'),
+        o_groups: intVal('o-groups'),
       },
     },
     hardware: $('#hw-profile').value,
@@ -741,7 +773,6 @@ function buildPredictRequest() {
       gradient_accumulation_steps: intVal('grad-accum'),
       train_batch_size: intVal('train-batch-size'),
       gen_batch_size: intVal('gen-batch-size'),
-      colocated: $('#deploy-mode').value === 'colocated',
       reference_model: $('#ref-model').checked,
       ref_offload_cpu: $('#ref-offload').checked,
       use_speculative_decoding: $('#spec-decode').checked,
@@ -937,6 +968,7 @@ function applyHFData(data) {
     $('#rope-dim').value = data.layer.rope_dim || 0;
     $('#window-size').value = data.layer.window_size || 0;
     $('#mhc-expansion').value = data.layer.mhc_expansion || 4;
+    applyDsaFields(data.layer);
   }
 
   // Auxiliary
@@ -1013,6 +1045,7 @@ function applyPreset(preset) {
       $('#rope-dim').value = m.layer.rope_dim || 0;
       $('#window-size').value = m.layer.window_size || 0;
       $('#mhc-expansion').value = m.layer.mhc_expansion || 4;
+      applyDsaFields(m.layer);
     }
 
     // Auxiliary
@@ -1054,16 +1087,19 @@ function applyPreset(preset) {
   if (preset.gen_parallelism) {
     applyParallelismToPanel('gen', preset.gen_parallelism);
   } else if (preset.parallelism) {
-    // Backward compat: derive gen from train TP
-    applyParallelismToPanel('gen', { tp: preset.parallelism.tp || 1, pp: 1, ep: 1, cp: 1 });
+    // Default gen parallelism = full train parallelism (tp/pp/ep/cp), matching
+    // the demo; dp is recomputed from total devices.
+    const pc = preset.parallelism;
+    applyParallelismToPanel('gen', { tp: pc.tp || 1, pp: pc.pp || 1, ep: pc.ep || 1, cp: pc.cp || 1 });
   }
 
   // Apply ref parallelism (explicit or derived from train TP)
   if (preset.ref_parallelism) {
     applyParallelismToPanel('ref', preset.ref_parallelism);
   } else if (preset.parallelism) {
-    // Backward compat: derive ref from train TP
-    applyParallelismToPanel('ref', { tp: preset.parallelism.tp || 1, pp: 1, ep: 1, cp: 1 });
+    // Default ref parallelism = full train parallelism (matches the demo).
+    const pc = preset.parallelism;
+    applyParallelismToPanel('ref', { tp: pc.tp || 1, pp: pc.pp || 1, ep: pc.ep || 1, cp: pc.cp || 1 });
   }
 
   // Apply RL config
@@ -1078,7 +1114,6 @@ function applyPreset(preset) {
     $('#grad-accum').value = r.gradient_accumulation_steps || 1;
     $('#train-batch-size').value = r.train_batch_size || 36;
     $('#gen-batch-size').value = r.gen_batch_size || 64;
-    $('#deploy-mode').value = r.colocated ? 'colocated' : 'separate';
     $('#ref-model').checked = r.reference_model !== false;
     $('#ref-offload').checked = !!r.ref_offload_cpu;
     $('#spec-decode').checked = !!r.use_speculative_decoding;
@@ -1109,9 +1144,8 @@ function recomputeDPFromPreset() {
     }
     const tp = intVal(`${phase}-tp`);
     const pp = intVal(`${phase}-pp`);
-    const ep = intVal(`${phase}-ep`);
     const cp = intVal(`${phase}-cp`);
-    const divisor = tp * pp * ep * cp;
+    const divisor = tp * pp * cp;  // EP shares DP devices, not counted here
     const dp = divisor > 0 ? Math.max(1, Math.floor(total / divisor)) : total;
     dpEl.value = dp;
   });
@@ -1343,128 +1377,34 @@ function renderTimeline(timeline) {
   const reshardGR = timeline.reshard_gen_ref_seconds || 0;
   const reshardRT = timeline.reshard_ref_train_seconds || 0;
   const stepS = timeline.step_time_seconds || 0;
-  const colocated = timeline.colocated;
 
+  // Phases run serially on the shared device pool:
+  // gen → reshard → ref → reshard → train. Stacked bar shows cumulative time.
   const traces = [];
+  const seg = (x, name, color, light) => {
+    if (!(x > 0)) return;
+    traces.push({
+      y: ['Step'], x: [x], type: 'bar', orientation: 'h', name,
+      marker: { color },
+      text: [`${x.toFixed(1)}s`], textposition: 'inside',
+      textfont: { color: light ? '#1a1a1a' : '#fff', size: light ? 10 : 12 },
+    });
+  };
 
-  if (colocated) {
-    // Colocated: sequential gen → reshard → ref → reshard → train
-    // Use stacked bar to show cumulative time
-    traces.push({
-      y: ['Step'],
-      x: [genS],
-      type: 'bar',
-      orientation: 'h',
-      name: 'Generation',
-      marker: { color: '#7c3aed' },
-      text: [`${genS.toFixed(1)}s`],
-      textposition: 'inside',
-      textfont: { color: '#fff', size: 12 },
-    });
-    if (reshardGR > 0) {
-      traces.push({
-        y: ['Step'],
-        x: [reshardGR],
-        type: 'bar',
-        orientation: 'h',
-        name: 'Reshard (gen→ref)',
-        marker: { color: '#fbbf24' },
-        text: [`${reshardGR.toFixed(1)}s`],
-        textposition: 'inside',
-        textfont: { color: '#1a1a1a', size: 10 },
-      });
-    }
-    if (refS > 0) {
-      traces.push({
-        y: ['Step'],
-        x: [refS],
-        type: 'bar',
-        orientation: 'h',
-        name: 'Reference',
-        marker: { color: '#06b6d4' },
-        text: [`${refS.toFixed(1)}s`],
-        textposition: 'inside',
-        textfont: { color: '#fff', size: 12 },
-      });
-    }
-    if (reshardRT > 0) {
-      traces.push({
-        y: ['Step'],
-        x: [reshardRT],
-        type: 'bar',
-        orientation: 'h',
-        name: 'Reshard (ref→train)',
-        marker: { color: '#fbbf24' },
-        text: [`${reshardRT.toFixed(1)}s`],
-        textposition: 'inside',
-        textfont: { color: '#1a1a1a', size: 10 },
-      });
-    }
-    traces.push({
-      y: ['Step'],
-      x: [trainS],
-      type: 'bar',
-      orientation: 'h',
-      name: 'Training',
-      marker: { color: '#ea580c' },
-      text: [`${trainS.toFixed(1)}s`],
-      textposition: 'inside',
-      textfont: { color: '#fff', size: 12 },
-    });
-  } else {
-    // Separate: phases run on different devices in parallel
-    // step_time = max(gen, ref, train)
-    traces.push({
-      y: ['Generation'],
-      x: [genS],
-      type: 'bar',
-      orientation: 'h',
-      name: 'Generation',
-      marker: { color: '#7c3aed' },
-      text: [`${genS.toFixed(1)}s`],
-      textposition: 'inside',
-      textfont: { color: '#fff', size: 12 },
-    });
-    if (refS > 0) {
-      traces.push({
-        y: ['Reference'],
-        x: [refS],
-        type: 'bar',
-        orientation: 'h',
-        name: 'Reference',
-        marker: { color: '#06b6d4' },
-        text: [`${refS.toFixed(1)}s`],
-        textposition: 'inside',
-        textfont: { color: '#fff', size: 12 },
-      });
-    }
-    traces.push({
-      y: ['Training'],
-      x: [trainS],
-      type: 'bar',
-      orientation: 'h',
-      name: 'Training',
-      marker: { color: '#ea580c' },
-      text: [`${trainS.toFixed(1)}s`],
-      textposition: 'inside',
-      textfont: { color: '#fff', size: 12 },
-    });
-  }
+  seg(genS, 'Generation', '#7c3aed');
+  seg(reshardGR, 'Reshard (gen→ref)', '#fbbf24', true);
+  seg(refS, 'Reference', '#06b6d4');
+  seg(reshardRT, 'Reshard (ref→train)', '#fbbf24', true);
+  seg(trainS, 'Training', '#ea580c');
 
   const layout = {
-    barmode: colocated ? 'stack' : 'group',
+    barmode: 'stack',
     ...chartLayout('Timeline (seconds)'),
-    xaxis: {
-      title: 'Seconds',
-      gridcolor: '#f0eeeb',
-      zeroline: false,
-    },
-    yaxis: {
-      automargin: true,
-    },
-    height: colocated ? 160 : 200,
+    xaxis: { title: 'Seconds', gridcolor: '#f0eeeb', zeroline: false },
+    yaxis: { automargin: true },
+    height: 160,
     margin: { l: 80, r: 30, t: 30, b: 40 },
-    annotations: colocated && stepS > 0 ? [{
+    annotations: stepS > 0 ? [{
       x: stepS,
       y: 0,
       text: `${stepS.toFixed(1)}s`,

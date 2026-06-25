@@ -41,7 +41,6 @@ rl:
   train_batch_size: 36
   gradient_accumulation_steps: 4
   gen_batch_size: 16
-  colocated: false
   reference_model: true
   ref_offload_cpu: true
   use_speculative_decoding: false

@@ -555,3 +555,26 @@ def test_prefill_attention_no_kv_cache_read():
     a = op_gqa_attention(H, G, d_h, d, batch, 512, Phase.PREFILL)
     b = op_gqa_attention(H, G, d_h, d, batch, 512, Phase.PREFILL, kv_len=8192)
     assert a.mem_rw == pytest.approx(b.mem_rw)
+
+
+def test_dsa_decode_models_decoupled_rope():
+    """DSA decode must model the MLA-style decoupled RoPE: rope projection in
+    weight + FLOPs, and the rope key (∝ rope_dim) in the KV-cache read."""
+    from llm_perf.ops import op_dsa_attention
+
+    H, Nq, r = 7168, 128, 64
+    base = dict(
+        hidden_size=H, num_heads=Nq, head_dim=128, q_lora_rank=1536,
+        o_lora_rank=512, o_groups=8, compress_ratio=4, compress_c_kv=512,
+        compress_coeff=1.0, index_n_heads=64, index_head_dim=128, index_topk=512,
+        window_size=4096, batch=16, seq_len=1, phase=Phase.DECODE, kv_len=4096,
+    )
+    a = op_dsa_attention(**base, rope_dim=0)
+    b = op_dsa_attention(**base, rope_dim=r)
+    # rope projection weight: Q rope (H*Nq*r) + K rope (H*r)
+    w_delta = (H * Nq * r + H * r) * 2
+    assert b.weight_bytes - a.weight_bytes == pytest.approx(w_delta)
+    # mem_rw delta = weight delta + KV rope-key read (batch*L*rope_dim*dtype)
+    kv_delta = 16 * 4096 * r * 2
+    assert b.mem_rw - a.mem_rw == pytest.approx(w_delta + kv_delta)
+    assert b.flops > a.flops  # rope projection FLOPs added

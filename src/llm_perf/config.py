@@ -182,7 +182,6 @@ class WorkloadConfig(BaseModel):
         reward_model: Whether a separate reward model is used for advantage estimation.
         reference_model: Whether a reference model is kept in memory.
         ref_offload_cpu: If True, reference model weights are offloaded to CPU.
-        colocated: If True, generation and training share the same devices.
         use_speculative_decoding: Enable speculative decoding during generation.
         mtp_acceptance_len: Expected accepted tokens per MTP step (optional).
     """
@@ -200,7 +199,6 @@ class WorkloadConfig(BaseModel):
     reward_model: bool = False
     reference_model: bool = True
     ref_offload_cpu: bool = False
-    colocated: bool = True
     use_speculative_decoding: bool = False
     mtp_acceptance_len: Optional[int] = None
 
@@ -219,7 +217,9 @@ class ParallelismConfig(BaseModel):
         sp: Whether sequence parallelism is enabled (replaces AllReduce with
             AllGather + ReduceScatter).
         zero_stage: ZeRO optimization stage (0, 1, 2, or 3).
-        pp_schedule: Pipeline schedule — "1f1b", "interleaved", etc.
+        pp_schedule: Pipeline schedule — "gpipe", "1f1b", "interleaved",
+            "zero_bubble". GPipe holds all M micro-batch activations (peak ∝ M);
+            1F1B/zero-bubble/interleaved only the warmup depth (≈ min(pp, M)).
         pp_virtual_stages: Virtual pipeline stages for interleaved schedule.
         recompute_attention: Recompute attention in backward to save activation memory.
         full_recomputation: Recompute all activations in backward pass.

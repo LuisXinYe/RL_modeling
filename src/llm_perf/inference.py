@@ -13,7 +13,7 @@ from llm_perf.builder import (
     build_generation_step,
 )
 from llm_perf.config import Phase
-from llm_perf.simulator import simulate
+from llm_perf._stage_utils import _simulate_slowest_stage
 
 
 def effective_response_len(
@@ -29,6 +29,42 @@ def effective_response_len(
     return avg
 
 
+def _build_prefill_ops(model_cfg, hw, parallel_cfg, rl_cfg, stage_layers=None):
+    prefill_ops, _ = build_generation_step(
+        model_cfg, hw, parallel_cfg, rl_cfg, stage_layers=stage_layers
+    )
+    return prefill_ops
+
+
+def _build_decode_ops(model_cfg, hw, parallel_cfg, rl_cfg, stage_layers=None):
+    _, decode_ops = build_generation_step(
+        model_cfg, hw, parallel_cfg, rl_cfg, stage_layers=stage_layers
+    )
+    return decode_ops
+
+
+def prefill_decode_times(model_cfg, hw, parallel_cfg, rl_cfg):
+    """Slowest-stage prefill time and per-token decode time.
+
+    For multi-stage PP, the slowest stage determines the pipeline time.
+    Each stage is simulated independently (build_fn rebuilt per stage's own
+    layer composition) and the maximum wall-clock time across stages is
+    used — same convention as training_time()/ref_time() via
+    _simulate_slowest_stage(). This matters for mixed-layer models where
+    stage 0 (which _split_stages gives any remainder layers to) is not
+    necessarily the slowest stage.
+
+    Returns (t_prefill, prefill_sim, t_decode_per_token).
+    """
+    t_prefill, prefill_sim = _simulate_slowest_stage(
+        _build_prefill_ops, model_cfg, hw, parallel_cfg, rl_cfg
+    )
+    t_decode_per_token, _ = _simulate_slowest_stage(
+        _build_decode_ops, model_cfg, hw, parallel_cfg, rl_cfg
+    )
+    return t_prefill, prefill_sim, t_decode_per_token
+
+
 def generation_time(model_cfg, hw, parallel_cfg, rl_cfg):
     """Total generation time in seconds. Returns (prefill_sim, t_step).
 
@@ -38,14 +74,13 @@ def generation_time(model_cfg, hw, parallel_cfg, rl_cfg):
       Prefill is paid once per prompt (4 times), not per response (64 times).
       Decode is paid per response (64 times × eff_len tokens).
 
-    For multi-stage PP, the slowest stage determines the pipeline time.
-    We simulate all stages and use the maximum prefill/decode times.
+    For multi-stage PP, the slowest stage determines the pipeline time;
+    see prefill_decode_times().
     """
 
-    prefill_ops, decode_ops = build_generation_step(model_cfg, hw, parallel_cfg, rl_cfg)
-    prefill_sim = simulate(prefill_ops)
-    t_prefill = prefill_sim.wall_clock_time
-    t_decode_per_token = simulate(decode_ops).wall_clock_time
+    t_prefill, prefill_sim, t_decode_per_token = prefill_decode_times(
+        model_cfg, hw, parallel_cfg, rl_cfg
+    )
 
     eff_len = effective_response_len(
         avg=rl_cfg.avg_response_len,

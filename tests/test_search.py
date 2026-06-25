@@ -65,7 +65,6 @@ def small_rl_cfg():
         max_response_len=1024,
         gen_batch_size=32,
         train_micro_batch_size=2,
-        colocated=False,
         reference_model=False,
     )
 
