@@ -117,26 +117,29 @@ def main():
     # Run inference timing
     prefill_sim, t_step = generation_time(model, hw, par, rl_cfg)
 
-    # Compute throughput metrics
+    # Latency / throughput metrics
     eff_len = effective_response_len(
         avg=inf.avg_response_len,
         std=inf.std_response_len,
         batch_size=inf.batch_size,
         max_len=inf.max_response_len,
     )
-    tps = inf.batch_size * eff_len / t_step if t_step > 0 else 0
-    sps = inf.batch_size / t_step if t_step > 0 else 0
+    ttft = prefill_sim.wall_clock_time                      # time to first token (prefill)
+    tpot = (t_step - ttft) / eff_len if eff_len > 0 else 0  # time per output token (decode/token)
+    tps = inf.batch_size * eff_len / t_step if t_step > 0 else 0   # aggregate tokens/s (whole batch)
+    per_req_tps = 1 / tpot if tpot > 0 else 0              # single-request decode tokens/s ≈ 1/TPOT
+    sps = inf.batch_size / t_step if t_step > 0 else 0      # samples (sequences) per second
 
     print("=" * 60)
     print(" Inference Performance Report")
     print("=" * 60)
-    print(f"  Total time:         {t_step:.3f} s")
-    print(f"  Effective resp len: {eff_len:.0f} tokens")
-    print(f"  Throughput:         {tps:,.0f} tokens/s")
-    print(f"  Samples/s:          {sps:.2f}")
-    print(f"  Prefill compute:    {prefill_sim.wall_clock_time:.3f} s")
-    print(f"  Decode per token:   {(t_step - prefill_sim.wall_clock_time) / eff_len:.4f} s/token")
-    print(f"  Weight per device:  {prefill_sim.weight_bytes / 1e9:.2f} GB")
+    print(f"  TTFT  (time to first token):    {ttft * 1000:,.1f} ms")
+    print(f"  TPOT  (time per output token):  {tpot * 1000:.2f} ms/token")
+    print(f"  E2E latency (TTFT + decode):    {t_step:.3f} s   ({eff_len:.0f} tokens)")
+    print(f"  Throughput (aggregate):         {tps:,.0f} tokens/s")
+    print(f"  Throughput (per request):       {per_req_tps:,.1f} tokens/s")
+    print(f"  Samples/s:                      {sps:.2f}")
+    print(f"  Weight per device:              {prefill_sim.weight_bytes / 1e9:.2f} GB")
     print("=" * 60)
 
 
