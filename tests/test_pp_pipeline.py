@@ -109,11 +109,10 @@ def test_anchor_bubble_v1():
     assert res.bubble_ratio == pytest.approx(expected, abs=0.02)
 
 
-def test_anchor_bubble_v2():
+def test_simulate_pipeline_v2_not_implemented():
     m, p, v = 8, 4, 2
-    res = simulate_pipeline(_equal_times(m, p, v), [1.0] * m, p, v=v)
-    expected = (p - 1) / (m * v + p - 1)     # interleaved bubble
-    assert res.bubble_ratio == pytest.approx(expected, abs=0.04)
+    with pytest.raises(NotImplementedError):
+        simulate_pipeline(_equal_times(m, p, v), [1.0] * m, p, v=v)
 
 
 def test_pp1_no_bubble():
@@ -128,3 +127,28 @@ def test_more_microbatches_smaller_bubble():
     b_few = simulate_pipeline(_equal_times(4, p, 1), [1.0] * 4, p, v=1).bubble_ratio
     b_many = simulate_pipeline(_equal_times(16, p, 1), [1.0] * 16, p, v=1).bubble_ratio
     assert b_many < b_few
+
+
+def _unequal_times(m, p):
+    # Unequal per-unit fwd/bwd durations, replicated across all p devices
+    # for each unit (v=1 -> S=p entries per unit).
+    fwds = [1.0 + 0.3 * ((j * 7) % 5) for j in range(m)]
+    bwds = [2.0 + 0.4 * ((j * 5) % 4) for j in range(m)]
+    return [[(fwds[j], bwds[j])] * p for j in range(m)]
+
+
+def test_1f1b_memory_bounded_variable_durations():
+    # 1F1B's defining memory property: in-flight activations are capped by
+    # pipeline depth p, independent of the number of microbatches m. With
+    # unequal per-unit durations, the old greedy/FIFO-tie-break schedule
+    # degraded to an eager order whose peak activation grows with m; hard
+    # schedule-order edges restore the bound.
+    p = 4
+    m_small, m_large = 8, 16
+    res_small = simulate_pipeline(
+        _unequal_times(m_small, p), [1.0] * m_small, p, v=1
+    )
+    res_large = simulate_pipeline(
+        _unequal_times(m_large, p), [1.0] * m_large, p, v=1
+    )
+    assert res_large.peak_activation_bytes <= 1.5 * res_small.peak_activation_bytes

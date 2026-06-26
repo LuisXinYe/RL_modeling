@@ -121,6 +121,11 @@ def simulate_pipeline(
     unit_stage_times[j][vs] = (fwd_t, bwd_t) for unit j at virtual stage vs.
     Returns step time, measured bubble ratio, peak in-flight activation, busy/dev.
     """
+    if v != 1:
+        raise NotImplementedError(
+            "interleaved virtual stages (v>1) are deferred; only v=1 1F1B is supported"
+        )
+
     m = len(unit_stage_times)
     S = p * v
     if m == 0:
@@ -157,37 +162,24 @@ def simulate_pipeline(
         for vs in range(S - 2, -1, -1):              # backward chain
             ops[op_index[(j, vs, "B")]].depends_on.append(op_index[(j, vs + 1, "B")])
 
-    # 3) per-device schedule order (encodes 1F1B(+V) issue order).
+    # 3) hard schedule-order edges (encodes 1F1B issue order on each device).
     #
-    # `simulate()` already serializes same-stream ops one-at-a-time via its
-    # per-stream clock, and a topological sort over the data-flow edges from
-    # step (2) is the only hard ordering constraint a real device must obey.
-    # Among the (generally many) topological orders consistent with that
-    # DAG, `simulate()`'s Kahn's-algorithm traversal breaks ties using FIFO
-    # insertion order of `ops` — so to make the simulation reproduce the
-    # *specific* 1F1B(+V) schedule (rather than an arbitrary valid order,
-    # e.g. GPipe-style all-forwards-then-all-backwards), we reorder `ops` so
-    # that ties resolve in schedule order.
-    #
-    # We deliberately do NOT add `pipeline_schedule`'s consecutive-event
-    # pairs as hard `depends_on` edges: the round-robin interleave (Task 2)
-    # builds each virtual stage's order independently and does not itself
-    # track the cross-vstage backward data dependency within one physical
-    # device (e.g. during cooldown it may alternate B(vs) and B(vs+p)
-    # without regard to which vstage is "deeper"). Hard-wiring that order
-    # as dependencies both risks cycles against the step-(2) data-flow edges
-    # and, even where acyclic, forces a strictly worse interleaving than the
-    # schedule intends — soft-ordering via list position avoids both.
+    # Chain each device's events in `pipeline_schedule` order: op[i] depends
+    # on op[i-1] for consecutive events on the same device. This makes the
+    # per-device execution order structurally deterministic and equal to the
+    # intended 1F1B order regardless of op durations (unlike relying on
+    # `simulate()`'s FIFO tie-break among topological orders, which only
+    # reproduces 1F1B for equal-duration ops). Restricted to v=1 (guarded
+    # above), where the standard 1F1B order is realizable and these edges
+    # stay acyclic alongside the data-flow edges from step (2).
     sched = pipeline_schedule(m, p, v)
-    sched_pos: Dict[int, int] = {}
     for d in range(p):
-        for pos, (j, vs, phase) in enumerate(sched[d]):
-            sched_pos[op_index[(j, vs, phase)]] = pos
-    order = sorted(range(len(ops)), key=lambda i: sched_pos[i])
-    ops = [ops[i] for i in order]
-    remap = {old: new for new, old in enumerate(order)}
-    for op in ops:
-        op.depends_on = [remap[d] for d in op.depends_on]
+        for pos in range(1, len(sched[d])):
+            prev_j, prev_vs, prev_phase = sched[d][pos - 1]
+            j, vs, phase = sched[d][pos]
+            ops[op_index[(j, vs, phase)]].depends_on.append(
+                op_index[(prev_j, prev_vs, prev_phase)]
+            )
 
     sim = simulate(ops)
     # busy time per device = sum of its op durations
