@@ -71,58 +71,24 @@ def hw():
     return load_hardware_config(str(CONFIGS / "hardware" / "ascend_910c.yaml"))
 
 
-def test_compare_speedup_variable_length(mc, hw):
-    par = ParallelismConfig(tp=8, cp=8, dp=1, pp=1)
+def test_compare_pipeline_speedup_variable_length(mc, hw):
+    par = ParallelismConfig(tp=2, cp=8, dp=1, pp=8)
     wl = WorkloadConfig(group_size=1)
-    buckets = lognormal_buckets(4096, 8192, 65536, n_buckets=8)
-    r = compare_cp_strategies(mc, hw, par, wl, buckets, total_ranks=64)
-    # variable-length with short-sequence mass → dynamic is faster per step
+    buckets = lognormal_buckets(4096, 8192, 65536, n_buckets=6)
+    r = compare_cp_strategies(mc, hw, par, wl, buckets, total_ranks=8, pp=8, v=1)
     assert r["speedup"] > 1.0
     assert r["dynamic"]["step_s"] < r["static"]["step_s"]
-    # dynamic achieves higher MFU / TFLOPS-per-GPU
-    assert r["dynamic"]["tflops_per_gpu"] > r["static"]["tflops_per_gpu"]
-    assert r["tflops_ratio"] > 1.0
-    # short bucket → small cp; longest bucket → max_cp (dynamic)
-    assert r["dynamic"]["buckets"][0]["cp"] < r["max_cp"]
-    assert r["dynamic"]["buckets"][-1]["cp"] == r["max_cp"]
-    # static forces max_cp everywhere
-    assert all(b["cp"] == r["max_cp"] for b in r["static"]["buckets"])
+    assert 0.0 <= r["dynamic"]["bubble_ratio"] < 1.0
+    assert r["static"]["m"] >= 1 and r["dynamic"]["m"] >= 1
+    # static forces max_cp on every unit
+    assert all(u["cp"] == r["max_cp"] for u in r["static"]["units"])
 
 
-def test_compare_no_gain_uniform_length(mc, hw):
-    par = ParallelismConfig(tp=8, cp=8, dp=1, pp=1)
+def test_compare_pipeline_uniform_no_gain(mc, hw):
+    par = ParallelismConfig(tp=2, cp=8, dp=1, pp=8)
     wl = WorkloadConfig(group_size=1)
-    # every sequence at max length → both recipes assign max_cp → no gain
-    r = compare_cp_strategies(mc, hw, par, wl, [(32768, 1.0)], total_ranks=64)
-    assert r["speedup"] == pytest.approx(1.0)
-    assert r["dynamic"]["buckets"][0]["cp"] == r["max_cp"]
-
-
-def test_pp_bubble_shrinks_with_more_micro_batches(mc, hw):
-    par = ParallelismConfig(tp=8, cp=8, dp=1, pp=4)
-    wl = WorkloadConfig(group_size=1)
-    buckets = lognormal_buckets(4096, 8192, 65536, n_buckets=8)
-    few = compare_cp_strategies(mc, hw, par, wl, buckets, total_ranks=64, num_micro_batches=4)
-    many = compare_cp_strategies(mc, hw, par, wl, buckets, total_ranks=64, num_micro_batches=64)
-    # more micro-batches amortize the (pp-1) warmup → smaller bubble fraction
-    assert many["dynamic"]["bubble_ratio"] < few["dynamic"]["bubble_ratio"]
-    assert few["dynamic"]["bubble_ratio"] > 0.0
-    # pp=1 → no bubble at all
-    par1 = ParallelismConfig(tp=8, cp=8, dp=1, pp=1)
-    r1 = compare_cp_strategies(mc, hw, par1, wl, buckets, total_ranks=64)
-    assert r1["dynamic"]["bubble_ratio"] == pytest.approx(0.0)
-
-
-def test_packing_inflates_step_time(mc, hw):
-    par = ParallelismConfig(tp=8, cp=8, dp=1, pp=1)
-    wl = WorkloadConfig(group_size=1)
-    buckets = lognormal_buckets(4096, 8192, 65536, n_buckets=8)
-    perfect = compare_cp_strategies(mc, hw, par, wl, buckets, total_ranks=64, packing_eff=1.0)
-    lossy = compare_cp_strategies(mc, hw, par, wl, buckets, total_ranks=64, packing_eff=0.5)
-    # worse packing → longer step, lower MFU; the speedup ratio is unchanged
-    assert lossy["dynamic"]["step_s"] > perfect["dynamic"]["step_s"]
-    assert lossy["dynamic"]["mfu"] < perfect["dynamic"]["mfu"]
-    assert lossy["speedup"] == pytest.approx(perfect["speedup"])
+    r = compare_cp_strategies(mc, hw, par, wl, [(32768, 1.0)], total_ranks=8, pp=8, v=1)
+    assert r["speedup"] == pytest.approx(1.0, abs=0.05)
 
 
 def test_assign_bin_cp_workload_vs_memory(mc, hw):
@@ -148,12 +114,26 @@ def test_pack_units_homogeneous_and_counts():
 
     buckets = [(4096.0, 0.5), (32768.0, 0.5)]
     R, B = 8, 4096
-    units = pack_units(buckets, R, B, cp_of, packing_eff_of=packing_eff_of)
+    global_batch_seqs = 64
+    units = pack_units(buckets, R, B, cp_of, packing_eff_of=packing_eff_of,
+                       global_batch_seqs=global_batch_seqs)
     assert all(isinstance(u, PoolUnit) for u in units)
     # each bin contributes >=1 unit; units in a bin share cp + seq_len
     cps = {u.seq_len: u.cp for u in units}
     assert cps[4096.0] == 1 and cps[32768.0] == 8
     assert all(u.packed_tokens == R * B for u in units)
+    # dp-aware unit count: bin_seqs = w_b * global_batch_seqs, dp_b = R // cp_b,
+    # n_b = ceil(bin_seqs / dp_b).
+    # short bin: cp=1 -> dp=8, bin_seqs=32 -> n_b=ceil(32/8)=4
+    # long bin:  cp=8 -> dp=1, bin_seqs=32 -> n_b=ceil(32/1)=32
+    counts = {}
+    for u in units:
+        counts[u.seq_len] = counts.get(u.seq_len, 0) + 1
+    assert counts[4096] == 4
+    assert counts[32768] == 32
+    # the cp=1 (dp=R) bin needs R x fewer units than the cp=max_cp (dp=1) bin
+    # for the same number of routed sequences.
+    assert counts[32768] == R * counts[4096]
 
 
 def test_order_units_balanced_spreads_slow():

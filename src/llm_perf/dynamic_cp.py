@@ -38,7 +38,6 @@ from __future__ import annotations
 import math
 from typing import List, Optional, Tuple
 
-from llm_perf._stage_utils import _pp_bubble_time
 from llm_perf.builder import build_training_step, _split_stages
 from llm_perf.pp_pipeline import PoolUnit, stage_unit_time, simulate_pipeline
 from llm_perf.simulator import SimResult, simulate
@@ -145,96 +144,51 @@ def _sample_sim(model_cfg, hw, base_par, rl_cfg, seq_len: float, cp: int) -> Sim
     return simulate(build_training_step(model_cfg, hw, par, cfg))
 
 
-def _strategy_cost(
-    model_cfg,
-    hw,
-    parallel_cfg,
-    rl_cfg,
-    seq_buckets,
-    *,
-    cp_of,
-    max_cp,
-    total_ranks: int,
-    token_budget: float,
-    num_micro_batches: int,
-    packing_eff: Optional[float],
-    sim_cache: dict,
-) -> dict:
-    """Cost of one recipe (CP assignment given by ``cp_of``) over the length dist.
+def _recipe(model_cfg, hw, parallel_cfg, rl_cfg, buckets, total_ranks, quota,
+            token_budget, max_cp, p, v, bwd_factor, order, cp_of,
+            global_batch_seqs):
+    """Cost of one recipe (CP assignment given by ``cp_of``) through the
+    variable-length 1F1B(+V) pipeline simulator.
 
-    Layers, in order:
-      1. per-sample wall + compute time + memory at the assigned CP (sim_cache);
-      2. rank-seconds resource cost  Σ w·cp·t  (the static-vs-dynamic axis);
-      3. packing efficiency η  (fragmentation fill, divides effective work);
-      4. PP bubble  (idle GPU-seconds from pipeline warmup/cooldown);
-      5. amortized step time, MFU / achieved TFLOPS-per-GPU, peak memory.
+    Pipeline: ``pack_units`` (bins → homogeneous pool units) → ``order_units``
+    (inflow order) → ``run_pipeline`` (simulate). MFU is reported against the
+    cp=1 irreducible-compute baseline (same convention as before): CP sharding
+    replicates fixed attention/small-op cost, which is overhead, not useful
+    FLOPs.
     """
-    total_frac = sum(f for _, f in seq_buckets) or 1.0
+    usable = hw.usable_hbm_gb
 
-    def sim(length: float, cp: int) -> SimResult:
-        key = (round(length), cp)
-        if key not in sim_cache:
-            sim_cache[key] = _sample_sim(model_cfg, hw, parallel_cfg, rl_cfg, length, cp)
-        return sim_cache[key]
+    def eta_of(L):
+        return packing_efficiency([(L, 1.0)], token_budget)
 
-    rank_s = 0.0          # Σ w·cp·t : wall busy GPU-seconds (comm + CP replication)
-    useful_rank_s = 0.0   # Σ w·compute(cp=1) : irreducible algorithmic FLOPs (GPU-s)
-    peak_mem_gb = 0.0
-    bucket_rows = []
-    for length, frac in seq_buckets:
-        w = frac / total_frac
-        cp_b = cp_of(length)
-        r = sim(length, cp_b)
-        rank_s += w * cp_b * r.wall_clock_time
-        # Useful work is the IRREDUCIBLE compute (cp=1). CP sharding replicates
-        # fixed attention/small-op cost — that replication is overhead, not useful
-        # FLOPs, so MFU is measured against the cp=1 baseline (same for both recipes).
-        useful_rank_s += w * sim(length, 1).compute_time
-        mem_gb = (r.weight_bytes + r.peak_activation_bytes) / 1e9
-        peak_mem_gb = max(peak_mem_gb, mem_gb)
-        bucket_rows.append({
-            "seq_len": float(length),
-            "fraction": w,
-            "cp": cp_b,
-            "t_s": r.wall_clock_time,
-            "cost_rank_s": cp_b * r.wall_clock_time,
-            "mem_gb": mem_gb,
-        })
-
-    # Packing: fragmentation inflates the effective work by 1/η.
-    eta = packing_eff if packing_eff is not None else packing_efficiency(seq_buckets, token_budget)
-    packed_rank_s = rank_s / eta
-
-    # PP bubble: idle GPU-seconds layered on the packed work.
-    bubble_rank_s = _pp_bubble_time(packed_rank_s, parallel_cfg, num_micro_batches)
-    occupied_rank_s = packed_rank_s + bubble_rank_s
-    bubble_ratio = bubble_rank_s / occupied_rank_s if occupied_rank_s > 0 else 0.0
-
-    # Amortized wall-clock per sample over the rank pool (throughput proxy).
-    step_s = occupied_rank_s / total_ranks if total_ranks > 0 else float("inf")
-
-    # MFU / achieved TFLOPS-per-GPU, self-consistent with the cost model:
-    #   compute_time = useful_FLOPs / (peak · compute_eff)  ⇒
-    #   MFU = compute_eff · (useful AI-core GPU-s) / (occupied GPU-s)
+    units = pack_units(buckets, total_ranks, token_budget, cp_of, eta_of,
+                       global_batch_seqs)
+    units = order_units(units, order=order)
+    res = run_pipeline(model_cfg, hw, parallel_cfg, rl_cfg, units, p, v, bwd_factor)
+    # MFU vs irreducible cp=1 compute (existing convention)
+    useful = sum(_sample_sim(model_cfg, hw, parallel_cfg, rl_cfg, u.seq_len, 1).compute_time
+                 for u in units)
+    rank_seconds = sum(u.cp * _sample_sim(model_cfg, hw, parallel_cfg, rl_cfg,
+                                          u.seq_len, u.cp).wall_clock_time for u in units)
     compute_eff = hw.calibration.compute_eff_large_gemm
-    mfu = compute_eff * useful_rank_s / occupied_rank_s if occupied_rank_s > 0 else 0.0
-    tflops_per_gpu = hw.peak_tflops_bf16 * mfu
-
-    usable_hbm = hw.usable_hbm_gb
+    denom = p * res.step_time
+    mfu = compute_eff * useful / denom if denom > 0 else 0.0
+    weight_gb = (_sample_sim(model_cfg, hw, parallel_cfg, rl_cfg, units[0].seq_len,
+                             units[0].cp).weight_bytes / 1e9) if units else 0.0
+    peak_mem_gb = res.peak_activation_bytes / 1e9 + weight_gb
+    busy = res.per_device_busy
+    imbalance = (max(busy) / (sum(busy) / len(busy))) if busy and sum(busy) > 0 else 1.0
     return {
-        "rank_seconds_per_sample": rank_s,
-        "packing_eff": eta,
-        "num_micro_batches": num_micro_batches,
-        "bubble_ratio": bubble_ratio,
-        "occupied_rank_s": occupied_rank_s,
-        "step_s": step_s,
-        "throughput_samples_s": 1.0 / step_s if step_s > 0 else 0.0,
+        "m": len(units),
+        "step_s": res.step_time,
+        "bubble_ratio": res.bubble_ratio,
         "mfu": mfu,
-        "tflops_per_gpu": tflops_per_gpu,
+        "tflops_per_gpu": hw.peak_tflops_bf16 * mfu,
         "peak_mem_gb": peak_mem_gb,
-        "usable_hbm_gb": usable_hbm,
-        "feasible": peak_mem_gb <= usable_hbm,
-        "buckets": bucket_rows,
+        "feasible": peak_mem_gb <= usable,
+        "imbalance": imbalance,
+        "rank_seconds_per_sample": rank_seconds / len(units) if units else 0.0,
+        "units": [{"cp": u.cp, "seq_len": u.seq_len} for u in units],
     }
 
 
@@ -249,28 +203,44 @@ def compare_cp_strategies(
     token_budget: Optional[float] = None,
     num_micro_batches: Optional[int] = None,
     packing_eff: Optional[float] = None,
+    pp: Optional[int] = None,
+    v: int = 1,
+    bwd_factor: float = 2.0,
+    order: str = "balanced",
+    global_batch_seqs: int = 64,
 ) -> dict:
-    """Compare *static CP* vs *dynamic CP*, each with packing + PP bubble.
+    """Compare *static CP* vs *dynamic CP*, each through the variable-length
+    1F1B(+V) pipeline simulator (``pack_units`` → ``order_units`` →
+    ``run_pipeline``).
 
     Args:
         model_cfg, hw: model + hardware configs.
-        parallel_cfg: base parallelism. ``cp`` is the max CP available; ``pp`` is
-            the pipeline depth used for the bubble; ``tp`` is folded into the
-            per-sample sim.
+        parallel_cfg: base parallelism. ``cp`` is the max CP available; ``pp``
+            is the pipeline depth (overridable via the ``pp`` kwarg); ``tp``
+            is folded into the per-unit stage sim.
         rl_cfg: workload (layer/recompute settings; lengths come from buckets).
         seq_buckets: [(seq_len, fraction)] length distribution (renormalized).
-        total_ranks: size of the CP/DP rank pool the work is amortized over.
+        total_ranks: size of the CP/DP rank pool work is packed/amortized over.
         quota: target per-rank sequence length for dynamic CP. Defaults to
             max_len / max_cp (longest bucket → full CP).
         token_budget: micro-batch packing budget in tokens. Defaults to max_len.
-        num_micro_batches: micro-batches per pipeline fill (for the bubble).
-            Defaults to max(pp, gradient_accumulation_steps).
-        packing_eff: override the modeled packing efficiency η for both recipes.
+        num_micro_batches: unused by the pipeline simulator; kept for backward
+            compatibility with callers (the simulator derives bubble from the
+            packed unit count and pipeline depth).
+        packing_eff: unused (kept for backward-compatible signature); packing
+            efficiency is derived per-bucket internally via ``packing_efficiency``.
+        pp: pipeline depth. Defaults to ``parallel_cfg.pp``.
+        v: virtual pipeline-parallel multiplier (interleaved schedule). Only
+            v=1 is currently supported by the underlying simulator.
+        bwd_factor: backward/forward time ratio passed to the per-stage sim.
+        order: unit inflow order for ``order_units`` ("balanced" by default).
+        global_batch_seqs: total sequences in the global batch routed across
+            bins; drives the dp-aware unit count in ``pack_units`` (each bin's
+            unit count is ``ceil(bin_seqs / dp_b)`` where ``dp_b = R // cp_b``).
 
-    Returns a dict with ``static`` and ``dynamic`` cost breakdowns plus the
-    top-level ``speedup`` (static_step / dynamic_step), ``tflops_ratio`` and
-    ``mfu`` gain. ``speedup`` is driven by the CP assignment; packing and the
-    PP bubble shift the absolute step time / MFU of both recipes.
+    Returns a dict with ``static`` and ``dynamic`` recipe breakdowns (see
+    ``_recipe``) plus the top-level ``speedup`` (static_step / dynamic_step)
+    and ``tflops_ratio``.
     """
     max_cp = max(1, int(parallel_cfg.cp))
     max_len = max(length for length, _ in seq_buckets)
@@ -278,39 +248,30 @@ def compare_cp_strategies(
         quota = max_len / max_cp
     if token_budget is None:
         token_budget = max_len
-    if num_micro_batches is None:
-        num_micro_batches = max(int(parallel_cfg.pp), int(rl_cfg.gradient_accumulation_steps))
+    p = int(pp) if pp is not None else int(parallel_cfg.pp)
+    usable = hw.usable_hbm_gb
 
-    sim_cache: dict = {}  # shared (len, cp) cache across both strategies
+    def static_cp_of(L):
+        return max_cp
 
-    def common(cp_of):
-        return _strategy_cost(
-            model_cfg, hw, parallel_cfg, rl_cfg, seq_buckets,
-            cp_of=cp_of, max_cp=max_cp, total_ranks=total_ranks,
-            token_budget=token_budget, num_micro_batches=num_micro_batches,
-            packing_eff=packing_eff, sim_cache=sim_cache,
-        )
+    def dynamic_cp_of(L):
+        return assign_bin_cp(model_cfg, hw, parallel_cfg, rl_cfg, L, quota, max_cp, usable)
 
-    static = common(lambda length: max_cp)
-    dynamic = common(lambda length: assign_cp(length, quota, max_cp))
+    static = _recipe(model_cfg, hw, parallel_cfg, rl_cfg, seq_buckets, total_ranks,
+                     quota, token_budget, max_cp, p, v, bwd_factor, order, static_cp_of,
+                     global_batch_seqs)
+    dynamic = _recipe(model_cfg, hw, parallel_cfg, rl_cfg, seq_buckets, total_ranks,
+                      quota, token_budget, max_cp, p, v, bwd_factor, order, dynamic_cp_of,
+                      global_batch_seqs)
 
-    speedup = (
-        static["step_s"] / dynamic["step_s"] if dynamic["step_s"] > 0 else 0.0
-    )
-    tflops_ratio = (
-        dynamic["tflops_per_gpu"] / static["tflops_per_gpu"]
-        if static["tflops_per_gpu"] > 0 else 0.0
-    )
+    speedup = static["step_s"] / dynamic["step_s"] if dynamic["step_s"] > 0 else 0.0
+    tflops_ratio = (dynamic["tflops_per_gpu"] / static["tflops_per_gpu"]
+                    if static["tflops_per_gpu"] > 0 else 0.0)
     return {
-        "max_cp": max_cp,
-        "quota": quota,
-        "token_budget": token_budget,
-        "num_micro_batches": num_micro_batches,
-        "total_ranks": total_ranks,
-        "static": static,
-        "dynamic": dynamic,
-        "speedup": speedup,
-        "tflops_ratio": tflops_ratio,
+        "max_cp": max_cp, "quota": quota, "token_budget": token_budget,
+        "total_ranks": total_ranks, "p": p, "v": v,
+        "static": static, "dynamic": dynamic,
+        "speedup": speedup, "tflops_ratio": tflops_ratio,
     }
 
 
@@ -332,21 +293,34 @@ def assign_bin_cp(model_cfg, hw, base_par, wl, seq_len, quota, max_cp,
     return max_cp
 
 
-def pack_units(buckets, total_ranks, token_budget, cp_of, packing_eff_of):
+def pack_units(buckets, total_ranks, token_budget, cp_of, packing_eff_of,
+               global_batch_seqs):
     """Pack a length distribution into homogeneous pool-wide units.
 
-    Each non-empty bin yields ceil(bin_tokens/(R·B·η)) units (≥1), all sharing
-    the bin's cp and representative seq_len. Fractions are renormalized.
+    Encodes the pool-wide microbatch abstraction (spec Section A): a pool of
+    ``R = total_ranks`` ranks running a unit at context-parallel degree ``cp``
+    uses data-parallel ``dp = R // cp``, so the unit processes ``dp`` sequences
+    CONCURRENTLY in one wall-time slot. A cp=1 unit (dp=R) thus needs R× fewer
+    units to drain the same number of sequences than a cp=max_cp unit (dp=1) —
+    this is the dynamic-CP throughput gain that the (now-removed) cp-agnostic
+    unit count failed to capture.
+
+    For each bin b: w_b = renormalized fraction, cp_b = cp_of(L_b),
+    dp_b = max(1, R // cp_b), bin_seqs = w_b * global_batch_seqs (sequences
+    routed to this bin), n_b = ceil(bin_seqs / dp_b) for a non-empty bin (0 if
+    bin_seqs == 0). Each emitted unit shares the bin's cp and representative
+    seq_len; ``packing_eff_of`` is accepted for signature compatibility with
+    callers but packing efficiency does not change the dp-driven unit count.
     """
     total_frac = sum(f for _, f in buckets) or 1.0
     R, B = total_ranks, token_budget
     units = []
     for bi, (length, frac) in enumerate(buckets):
         w = frac / total_frac
-        bin_tokens = w * R * B  # tokens of this bin per pool-wide batch slot scale
-        eta = packing_eff_of(length)
-        n_b = max(1, math.ceil(bin_tokens / (R * B * eta))) if bin_tokens > 0 else 0
         cp_b = cp_of(length)
+        dp_b = max(1, R // max(1, int(cp_b)))
+        bin_seqs = w * global_batch_seqs
+        n_b = math.ceil(bin_seqs / dp_b) if bin_seqs > 0 else 0
         for _ in range(n_b):
             units.append(PoolUnit(cp=int(cp_b), seq_len=int(length),
                                   packed_tokens=int(R * B), bin_index=bi))
