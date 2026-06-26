@@ -14,11 +14,14 @@ from llm_perf.config import (
     load_model_config,
 )
 from llm_perf.dynamic_cp import (
+    assign_bin_cp,
     assign_cp,
     compare_cp_strategies,
     lognormal_buckets,
+    pack_units,
     packing_efficiency,
 )
+from llm_perf.pp_pipeline import PoolUnit
 
 CONFIGS = Path(__file__).parent.parent / "configs"
 
@@ -120,3 +123,34 @@ def test_packing_inflates_step_time(mc, hw):
     assert lossy["dynamic"]["step_s"] > perfect["dynamic"]["step_s"]
     assert lossy["dynamic"]["mfu"] < perfect["dynamic"]["mfu"]
     assert lossy["speedup"] == pytest.approx(perfect["speedup"])
+
+
+def test_assign_bin_cp_workload_vs_memory(mc, hw):
+    par = ParallelismConfig(tp=2, cp=8, dp=1, pp=1)
+    wl = WorkloadConfig(group_size=1)
+    quota = 4096
+    big_hbm = hw.usable_hbm_gb
+    # short seq, ample memory → workload-driven (cp=1)
+    assert assign_bin_cp(mc, hw, par, wl, 4096, quota, 8, big_hbm) == 1
+    # long seq → workload pushes cp up
+    assert assign_bin_cp(mc, hw, par, wl, 32768, quota, 8, big_hbm) >= 4
+    # tiny memory budget forces cp up even for a short seq (memory-driven)
+    cp_mem = assign_bin_cp(mc, hw, par, wl, 4096, quota, 8, usable_hbm_gb=0.05)
+    assert cp_mem > 1
+
+
+def test_pack_units_homogeneous_and_counts():
+    def cp_of(L):
+        return 1 if L <= 4096 else 8
+
+    def packing_eff_of(L):
+        return 1.0
+
+    buckets = [(4096.0, 0.5), (32768.0, 0.5)]
+    R, B = 8, 4096
+    units = pack_units(buckets, R, B, cp_of, packing_eff_of=packing_eff_of)
+    assert all(isinstance(u, PoolUnit) for u in units)
+    # each bin contributes >=1 unit; units in a bin share cp + seq_len
+    cps = {u.seq_len: u.cp for u in units}
+    assert cps[4096.0] == 1 and cps[32768.0] == 8
+    assert all(u.packed_tokens == R * B for u in units)

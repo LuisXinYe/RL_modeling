@@ -40,6 +40,7 @@ from typing import List, Optional, Tuple
 
 from llm_perf._stage_utils import _pp_bubble_time
 from llm_perf.builder import build_training_step
+from llm_perf.pp_pipeline import PoolUnit
 from llm_perf.simulator import SimResult, simulate
 
 
@@ -311,3 +312,42 @@ def compare_cp_strategies(
         "speedup": speedup,
         "tflops_ratio": tflops_ratio,
     }
+
+
+def assign_bin_cp(model_cfg, hw, base_par, wl, seq_len, quota, max_cp,
+                  usable_hbm_gb) -> int:
+    """Per-bin CP = clamp(max(cp_workload, cp_memory), 1, max_cp).
+
+    cp_workload keeps per-rank sequence ≤ quota; cp_memory is the smallest cp
+    whose per-rank (weight+activation) fits usable_hbm_gb. Doubles cp until it
+    fits (memory repair); returns max_cp if it never fits (caller flags OOM).
+    """
+    cp = assign_cp(seq_len, quota, max_cp)
+    while cp <= max_cp:
+        sim = _sample_sim(model_cfg, hw, base_par, wl, seq_len, cp)
+        mem_gb = (sim.weight_bytes + sim.peak_activation_bytes) / 1e9
+        if mem_gb <= usable_hbm_gb or cp >= max_cp:
+            return cp
+        cp = min(max_cp, cp * 2)
+    return max_cp
+
+
+def pack_units(buckets, total_ranks, token_budget, cp_of, packing_eff_of):
+    """Pack a length distribution into homogeneous pool-wide units.
+
+    Each non-empty bin yields ceil(bin_tokens/(R·B·η)) units (≥1), all sharing
+    the bin's cp and representative seq_len. Fractions are renormalized.
+    """
+    total_frac = sum(f for _, f in buckets) or 1.0
+    R, B = total_ranks, token_budget
+    units = []
+    for bi, (length, frac) in enumerate(buckets):
+        w = frac / total_frac
+        bin_tokens = w * R * B  # tokens of this bin per pool-wide batch slot scale
+        eta = packing_eff_of(length)
+        n_b = max(1, math.ceil(bin_tokens / (R * B * eta))) if bin_tokens > 0 else 0
+        cp_b = cp_of(length)
+        for _ in range(n_b):
+            units.append(PoolUnit(cp=int(cp_b), seq_len=int(length),
+                                  packed_tokens=int(R * B), bin_index=bi))
+    return units
