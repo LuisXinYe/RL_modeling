@@ -154,3 +154,24 @@ def test_pack_units_homogeneous_and_counts():
     cps = {u.seq_len: u.cp for u in units}
     assert cps[4096.0] == 1 and cps[32768.0] == 8
     assert all(u.packed_tokens == R * B for u in units)
+
+
+def test_order_units_balanced_spreads_slow():
+    from llm_perf.dynamic_cp import order_units
+    units = [PoolUnit(cp=1, seq_len=4096, packed_tokens=1, bin_index=0) for _ in range(6)]
+    units += [PoolUnit(cp=8, seq_len=32768, packed_tokens=1, bin_index=1) for _ in range(2)]
+    out = order_units(units, order="balanced")
+    # the two slow (cp=8) units should not be adjacent at the very end
+    slow_positions = [i for i, u in enumerate(out) if u.cp == 8]
+    assert slow_positions[1] - slow_positions[0] >= 2
+
+
+def test_run_pipeline_smoke(mc, hw):
+    from llm_perf.dynamic_cp import run_pipeline
+    par = ParallelismConfig(tp=2, cp=8, dp=1, pp=8)
+    wl = WorkloadConfig(group_size=1)
+    units = [PoolUnit(cp=1, seq_len=4096, packed_tokens=8 * 4096, bin_index=0) for _ in range(4)]
+    units += [PoolUnit(cp=8, seq_len=32768, packed_tokens=8 * 4096, bin_index=1) for _ in range(2)]
+    res = run_pipeline(mc, hw, par, wl, units, p=8, v=1)
+    assert res.step_time > 0
+    assert 0.0 <= res.bubble_ratio < 1.0

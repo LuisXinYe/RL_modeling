@@ -39,8 +39,8 @@ import math
 from typing import List, Optional, Tuple
 
 from llm_perf._stage_utils import _pp_bubble_time
-from llm_perf.builder import build_training_step
-from llm_perf.pp_pipeline import PoolUnit
+from llm_perf.builder import build_training_step, _split_stages
+from llm_perf.pp_pipeline import PoolUnit, stage_unit_time, simulate_pipeline
 from llm_perf.simulator import SimResult, simulate
 
 
@@ -351,3 +351,46 @@ def pack_units(buckets, total_ranks, token_budget, cp_of, packing_eff_of):
             units.append(PoolUnit(cp=int(cp_b), seq_len=int(length),
                                   packed_tokens=int(R * B), bin_index=bi))
     return units
+
+
+def order_units(units, order: str = "balanced"):
+    """Order pool units for pipeline inflow. 'balanced' interleaves slow units."""
+    if order == "as_packed":
+        return list(units)
+    keyed = sorted(units, key=lambda u: (u.cp, u.seq_len), reverse=True)  # slow first
+    if order == "descending":
+        return keyed
+    # balanced: deal slow→fast round-robin into `stride` buckets then concatenate
+    n = len(keyed)
+    if n <= 1:
+        return keyed
+    stride = max(2, int(round(n ** 0.5)))
+    buckets = [[] for _ in range(stride)]
+    for i, u in enumerate(keyed):
+        buckets[i % stride].append(u)
+    out = []
+    for b in buckets:
+        out.extend(b)
+    return out
+
+
+def run_pipeline(model_cfg, hw, base_par, wl, units, p, v=1, bwd_factor=2.0):
+    """Time a list of pool units through the variable-length 1F1B(+V) pipeline."""
+    S = p * v
+    chunks = _split_stages(model_cfg.get_layers(), S)
+    cache: dict = {}
+    unit_stage_times = []
+    unit_act_bytes = []
+    for u in units:
+        per_stage = []
+        for vs in range(S):
+            fwd_t, bwd_t = stage_unit_time(
+                model_cfg, hw, base_par, wl, chunks[vs], chunk_id=vs,
+                cp=u.cp, seq_len=u.seq_len, bwd_factor=bwd_factor, cache=cache,
+            )
+            per_stage.append((fwd_t, bwd_t))
+        unit_stage_times.append(per_stage)
+        # activation footprint of the unit at one stage (proxy: inner-sim peak)
+        sim = _sample_sim(model_cfg, hw, base_par, wl, u.seq_len, u.cp)
+        unit_act_bytes.append(sim.peak_activation_bytes)
+    return simulate_pipeline(unit_stage_times, unit_act_bytes, p, v=v)
