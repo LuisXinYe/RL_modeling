@@ -524,3 +524,18 @@ def test_hybrid_layers_different_types(hw, rl_cfg):
     names = [op.name for op in all_ops]
     assert any("gqa" in n for n in names)
     assert any("swa" in n for n in names)
+
+
+def test_comm_ops_are_fabric_tagged():
+    """Every comm SimOp must carry a fabric tag; DP inter-node ops must be 'nic'."""
+    model = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
+    hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
+    # devices_per_node=8; tp=4 intra-node (nvlink), dp=16 inter-node (nic)
+    pc = ParallelismConfig(tp=4, dp=16)
+    rl = WorkloadConfig(total_prompts=8, group_size=2, train_micro_batch_size=1)
+    ops = build_training_step(model, hw, pc, rl)
+    comm_ops = [o for o in ops if o.stream.endswith("_comm")]
+    assert comm_ops, "expected some comm ops"
+    assert all(o.fabric in ("nvlink", "nic") for o in comm_ops)
+    dp_ops = [o for o in ops if o.stream == "dp_comm"]
+    assert dp_ops and all(o.fabric == "nic" for o in dp_ops)  # dp=16 inter-node

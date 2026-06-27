@@ -101,6 +101,11 @@ def _is_intra_node(group_size: int, hw: HardwareConfig) -> bool:
     return group_size <= hw.devices_per_node
 
 
+def _fabric(group_size: int, hw: HardwareConfig) -> str:
+    """Physical fabric a collective traverses: intra-node NVLink/HCCS vs inter-node NIC."""
+    return "nvlink" if _is_intra_node(group_size, hw) else "nic"
+
+
 _COLLECTIVE_OPS = {
     "allreduce": (ops.op_allreduce, "ring"),
     "allgather": (ops.op_allgather, "ring_half"),
@@ -142,6 +147,7 @@ def _build_tp_comm(
         weight_bytes=0,
         output_bytes=0,
         comm_bytes=cost.comm_bytes,
+        fabric=_fabric(tp, hw),
     )
 
 
@@ -252,6 +258,7 @@ def build_layer_ops(
             weight_bytes=0,
             output_bytes=0,
             comm_bytes=cp_cost.comm_bytes,
+            fabric=_fabric(cp, hw),
         )
         result.append(cp_ring)
 
@@ -369,6 +376,7 @@ def build_layer_ops(
                 weight_bytes=0,
                 output_bytes=0,
                 comm_bytes=index_allreduce_cost.comm_bytes,
+                fabric=_fabric(tp, hw),
             )
             result.append(index_allreduce_op)
 
@@ -494,6 +502,7 @@ def build_layer_ops(
                 weight_bytes=0,
                 output_bytes=0,
                 comm_bytes=a2a_dispatch_cost.comm_bytes,
+                fabric=_fabric(ep, hw),
             )
             result.append(ep_dispatch)
             last_compute_local = len(result) - 1
@@ -543,6 +552,7 @@ def build_layer_ops(
                 weight_bytes=0,
                 output_bytes=0,
                 comm_bytes=a2a_combine_cost.comm_bytes,
+                fabric=_fabric(ep, hw),
             )
             result.append(ep_combine)
             last_compute_local = len(result) - 1
@@ -955,6 +965,7 @@ def build_training_step(
                 weight_bytes=0,
                 output_bytes=0,
                 comm_bytes=dp_cost.comm_bytes,
+                fabric=_fabric(dp, hw),
             )
             all_ops.append(dp_sync)
             dp_sync_indices.append(len(all_ops) - 1)
