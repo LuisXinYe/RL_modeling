@@ -22,6 +22,8 @@ class SimResult:
         weight_bytes: Total deduplicated model weight memory in bytes.
         peak_activation_bytes: Peak live activation memory in bytes.
         total_comm_bytes: Total communication volume in bytes.
+        quant_overhead_seconds: Sum of durations of quantize/hadamard/dequant/compensation ops.
+        compute_seconds_by_class: Sum of compute-stream op durations keyed by op_class.
     """
 
     wall_clock_time: float  # seconds
@@ -34,6 +36,8 @@ class SimResult:
     dp_comm_time: float = 0
     cp_comm_time: float = 0
     exposed_comm_by_fabric: Dict[str, float] = field(default_factory=dict)
+    quant_overhead_seconds: float = 0.0
+    compute_seconds_by_class: Dict[str, float] = field(default_factory=dict)
 
 
 def simulate(ops: List[SimOp]) -> SimResult:
@@ -176,6 +180,21 @@ def simulate(ops: List[SimOp]) -> SimResult:
     # -----------------------------------------------------------------------
     total_comm = sum(op.comm_bytes for op in ops)
 
+    # -----------------------------------------------------------------------
+    # 7. Quantization overhead and compute-class breakdown
+    # -----------------------------------------------------------------------
+    _QUANT_PREFIXES = ("quantize", "hadamard", "dequant", "compensation")
+    quant_overhead = sum(
+        op.duration
+        for op in ops
+        if any(op.name.startswith(p) for p in _QUANT_PREFIXES)
+    )
+
+    compute_by_class: Dict[str, float] = defaultdict(float)
+    for op in ops:
+        if op.stream == "compute" and op.op_class is not None:
+            compute_by_class[op.op_class] += op.duration
+
     return SimResult(
         wall_clock_time=wall_clock,
         weight_bytes=total_weight,
@@ -187,4 +206,6 @@ def simulate(ops: List[SimOp]) -> SimResult:
         dp_comm_time=dp_comm_time,
         cp_comm_time=cp_comm_time,
         exposed_comm_by_fabric=exposed_comm_by_fabric,
+        quant_overhead_seconds=quant_overhead,
+        compute_seconds_by_class=dict(compute_by_class),
     )

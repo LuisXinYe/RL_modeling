@@ -73,6 +73,10 @@ class TargetReport:
     train_parallel: object = None  # ParallelismConfig used for training
     ref_parallel: object = None  # ParallelismConfig used for reference
     feasible: bool = True  # True if no OOM
+    # Per-precision / per-fabric breakdown (populated from training-step simulation)
+    exposed_comm_by_fabric: dict = field(default_factory=dict)  # fabric→exposed_comm_seconds
+    quant_overhead_seconds: float = 0.0  # Total quantize/hadamard/dequant/compensation op time
+    compute_seconds_by_class: dict = field(default_factory=dict)  # compute_class→seconds
 
 
 def format_table(report: TargetReport) -> str:
@@ -143,6 +147,17 @@ def format_table(report: TargetReport) -> str:
             lines.append(f"   Ref:   {mem.total_ref_gb:.1f}/{mem.usable_hbm_gb:.1f} GB  [{'OK' if mem.ref_feasible else 'OOM'}]")
         if mem.reward_model_gb > 0:
             lines.append(f"   Reward model:    {mem.reward_model_gb:.1f} GB")
+    if report.quant_overhead_seconds > 0 or report.compute_seconds_by_class or report.exposed_comm_by_fabric:
+        lines.append("-" * 60)
+        lines.append(" Precision breakdown (training step):")
+        if report.quant_overhead_seconds > 0:
+            lines.append(f"   Quant overhead:  {report.quant_overhead_seconds * 1000:.1f} ms")
+        if report.compute_seconds_by_class:
+            for cls, secs in sorted(report.compute_seconds_by_class.items()):
+                lines.append(f"   compute [{cls}]:  {secs * 1000:.1f} ms")
+        if report.exposed_comm_by_fabric:
+            for fabric, secs in sorted(report.exposed_comm_by_fabric.items()):
+                lines.append(f"   exposed [{fabric}]:  {secs * 1000:.1f} ms")
     lines.append("=" * 60)
     return "\n".join(lines)
 

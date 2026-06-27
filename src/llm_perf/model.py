@@ -119,6 +119,9 @@ class LLMPerformanceModel:
             train_parallel=train_parallel,
             ref_parallel=ref_parallel,
             feasible=feasible,
+            exposed_comm_by_fabric=dict(train_sim.exposed_comm_by_fabric),
+            quant_overhead_seconds=train_sim.quant_overhead_seconds,
+            compute_seconds_by_class=dict(train_sim.compute_seconds_by_class),
         )
 
     def feasibility_check(
@@ -595,3 +598,82 @@ class LLMPerformanceModel:
                 self.derive_targets(total_devices, cfg, gen_parallel, train_parallel, ref_parallel)
             )
         return results
+
+
+def compare_precision(
+    model_cfg: ModelConfig,
+    hw: HardwareConfig,
+    parallel_cfg,
+    rl_cfg: WorkloadConfig,
+    recipes: dict,
+) -> list:
+    """Compare multiple precision recipes on the same model/hardware/parallel config.
+
+    For each named recipe, runs the training-step simulation and returns a list of
+    per-recipe dicts with performance and communication metrics.
+
+    Args:
+        model_cfg: ModelConfig.
+        hw: HardwareConfig (must have peak_tflops for fp8/fp4 if those are used).
+        parallel_cfg: ParallelismConfig for the training phase.
+        rl_cfg: WorkloadConfig providing training workload parameters.
+        recipes: Dict mapping recipe name → PrecisionConfig.
+
+    Returns:
+        List of dicts, one per recipe, each with:
+            name, step_seconds, speedup_vs_bf16, comm_bytes, comm_reduction_pct,
+            exposed_comm_by_fabric, peak_memory_gb, feasible.
+
+    The baseline for speedup and comm_reduction_pct is the recipe named "bf16"
+    if present, otherwise the first recipe in the dict.
+    """
+    # Determine baseline recipe key
+    baseline_key = "bf16" if "bf16" in recipes else next(iter(recipes))
+
+    # Run simulation for each recipe
+    computed = {}
+    for name, precision_cfg in recipes.items():
+        t_step, train_sim, _bd = pretraining_time(
+            model_cfg, hw, parallel_cfg, rl_cfg, precision_cfg=precision_cfg
+        )
+        # Rough peak memory: weights (bf16-equivalent) + grad + optimizer + activations
+        # (8× weight bytes is a good rule-of-thumb for mixed-precision Adam)
+        peak_memory_gb = (
+            train_sim.weight_bytes * 8 + train_sim.peak_activation_bytes
+        ) / 1e9
+        computed[name] = {
+            "t_step": t_step,
+            "train_sim": train_sim,
+            "peak_memory_gb": peak_memory_gb,
+        }
+
+    t_baseline = computed[baseline_key]["t_step"]
+    comm_baseline = computed[baseline_key]["train_sim"].total_comm_bytes
+
+    rows = []
+    for name in recipes:  # preserve insertion order
+        data = computed[name]
+        t_step = data["t_step"]
+        train_sim = data["train_sim"]
+        peak_memory_gb = data["peak_memory_gb"]
+        comm_bytes = train_sim.total_comm_bytes
+
+        speedup = t_baseline / t_step if t_step > 0 else 1.0
+        comm_reduction_pct = (
+            (1.0 - comm_bytes / comm_baseline) * 100.0
+            if comm_baseline > 0
+            else 0.0
+        )
+
+        rows.append({
+            "name": name,
+            "step_seconds": t_step,
+            "speedup_vs_bf16": speedup,
+            "comm_bytes": comm_bytes,
+            "comm_reduction_pct": comm_reduction_pct,
+            "exposed_comm_by_fabric": dict(train_sim.exposed_comm_by_fabric),
+            "peak_memory_gb": peak_memory_gb,
+            "feasible": peak_memory_gb <= hw.usable_hbm_gb,
+        })
+
+    return rows

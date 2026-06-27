@@ -416,3 +416,34 @@ def test_periodic_high_precision_blends_step_time(model_cfg, hw):
 
     # N=4 → weight = (1 - 1/4) = 0.75 low + 0.25 high
     assert t_blend == pytest.approx(0.75 * t_low + 0.25 * t_high, rel=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Test: compare_precision
+# ---------------------------------------------------------------------------
+
+
+def test_compare_precision_orders_speedup_and_memory():
+    from llm_perf.model import compare_precision
+
+    model = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
+    hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
+    pc = ParallelismConfig(tp=1, dp=4)
+    rl = WorkloadConfig(total_prompts=8, group_size=2, train_micro_batch_size=1)
+    recipes = {
+        "bf16": PrecisionConfig.bf16_default(),
+        "fp8": PrecisionConfig(
+            weights=TensorPrecision(dtype="fp8_e4m3", block_size=128),
+            activations=TensorPrecision(dtype="fp8_e4m3", block_size=128),
+            comm=TensorPrecision(dtype="fp8_e4m3"),
+        ),
+    }
+    rows = compare_precision(model, hw, pc, rl, recipes)
+    by_name = {r["name"]: r for r in rows}
+    assert by_name["bf16"]["speedup_vs_bf16"] == pytest.approx(1.0)
+    assert by_name["fp8"]["speedup_vs_bf16"] >= 1.0
+    assert by_name["fp8"]["comm_reduction_pct"] > 0
+    assert (
+        "nic" in by_name["fp8"]["exposed_comm_by_fabric"]
+        or "nvlink" in by_name["fp8"]["exposed_comm_by_fabric"]
+    )

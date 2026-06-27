@@ -95,6 +95,7 @@ class SimOp:
     comm_bytes: float = 0  # communication volume in bytes (for comm ops)
     consumers: Optional[List[int]] = None
     fabric: Optional[str] = None  # "nvlink" (intra-node) | "nic" (inter-node) | None for compute
+    op_class: Optional[str] = None  # compute pipe class for GEMM ops: "bf16" | "fp8" | "fp4"
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +569,7 @@ def build_layer_ops(
             depends_on=[],  # set by _inject_quant_chain
             weight_bytes=ffn_cost.weight_bytes,
             output_bytes=ffn_cost.output_bytes,
+            op_class=_compute_class(pc.activations.dtype),
         )
         tail_idx = _inject_quant_chain(
             result=result,
@@ -635,6 +637,7 @@ def build_layer_ops(
             depends_on=[],  # set by _inject_quant_chain
             weight_bytes=ffn_cost.weight_bytes,
             output_bytes=ffn_cost.output_bytes,
+            op_class=_compute_class(pc.activations.dtype),
         )
         tail_idx = _inject_quant_chain(
             result=result,
