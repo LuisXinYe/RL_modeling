@@ -94,6 +94,7 @@ class SimOp:
     output_bytes: float = 0
     comm_bytes: float = 0  # communication volume in bytes (for comm ops)
     consumers: Optional[List[int]] = None
+    param_count: float = 0  # architecture param count (set once, on the optimizer op)
     fabric: Optional[str] = None  # "nvlink" (intra-node) | "nic" (inter-node) | None for compute
     op_class: Optional[str] = None  # compute pipe class for GEMM ops: "bf16" | "fp8" | "fp4"
 
@@ -268,7 +269,7 @@ def build_layer_ops(
         Precision configuration. None resolves to PrecisionConfig.bf16_default(),
         which reproduces legacy single-dtype behavior.
     """
-    pc = precision_cfg or PrecisionConfig.bf16_default()
+    pc = precision_cfg or PrecisionConfig.from_model_dtype(model_cfg.dtype)
     tp = parallel_cfg.tp
     ep = parallel_cfg.ep
     cp = parallel_cfg.cp
@@ -558,6 +559,8 @@ def build_layer_ops(
             batch_tokens=batch_tokens,
             phase=phase,
             dtype_bytes=dtype_bytes,
+            weight_dtype_bytes=_prec_dtype_bytes(pc.weights.dtype),
+            act_dtype_bytes=_prec_dtype_bytes(pc.activations.dtype),
         )
         ffn_op = SimOp(
             name="ffn_swiglu",
@@ -626,6 +629,8 @@ def build_layer_ops(
             batch_tokens=batch_tokens,
             phase=phase,
             dtype_bytes=dtype_bytes,
+            weight_dtype_bytes=_prec_dtype_bytes(pc.weights.dtype),
+            act_dtype_bytes=_prec_dtype_bytes(pc.activations.dtype),
         )
         ffn_op = SimOp(
             name="ffn_moe",
@@ -960,7 +965,7 @@ def build_training_step(
     pp = parallel_cfg.pp
     dp = parallel_cfg.dp
     dtype_bytes = model_cfg.dtype_bytes
-    pc = precision_cfg or PrecisionConfig.bf16_default()
+    pc = precision_cfg or PrecisionConfig.from_model_dtype(model_cfg.dtype)
 
     seq_len = rl_cfg.avg_prompt_len + rl_cfg.avg_response_len
     batch = rl_cfg.train_micro_batch_size
@@ -1163,6 +1168,7 @@ def build_training_step(
         depends_on=optim_depends,
         weight_bytes=0,
         output_bytes=0,
+        param_count=param_count,
     )
     all_ops.append(optim_op)
 

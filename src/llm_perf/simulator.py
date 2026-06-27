@@ -38,6 +38,8 @@ class SimResult:
     exposed_comm_by_fabric: Dict[str, float] = field(default_factory=dict)
     quant_overhead_seconds: float = 0.0
     compute_seconds_by_class: Dict[str, float] = field(default_factory=dict)
+    param_count: float = 0.0  # architecture-derived param count (precision-independent)
+    ef_buffer_bytes: float = 0.0  # error-feedback resident buffer, separate from weights
 
 
 def simulate(ops: List[SimOp]) -> SimResult:
@@ -128,8 +130,14 @@ def simulate(ops: List[SimOp]) -> SimResult:
 
     # -----------------------------------------------------------------------
     # 4. Weight bytes (sum all — builder only sets weight_bytes on fwd ops)
+    #
+    # Error-feedback (EF) buffers are persistent resident state, NOT model
+    # weights. They are tracked separately so downstream memory accounting can
+    # (a) derive param_count from architecture, not from this sum, and
+    # (b) report the EF buffer as its own resident-memory line.
     # -----------------------------------------------------------------------
-    total_weight = sum(op.weight_bytes for op in ops)
+    ef_buffer_bytes = sum(op.weight_bytes for op in ops if op.name == "ef_buffer")
+    total_weight = sum(op.weight_bytes for op in ops) - ef_buffer_bytes
 
     # -----------------------------------------------------------------------
     # 5. Activation memory tracking with ref-counting
@@ -195,6 +203,11 @@ def simulate(ops: List[SimOp]) -> SimResult:
         if op.stream == "compute" and op.op_class is not None:
             compute_by_class[op.op_class] += op.duration
 
+    # Architecture-derived param count (set by the builder on the optimizer op).
+    # Precision-independent, so downstream memory accounting never infers it from
+    # the now-precision-scaled weight_bytes sum.
+    total_param_count = sum(op.param_count for op in ops)
+
     return SimResult(
         wall_clock_time=wall_clock,
         weight_bytes=total_weight,
@@ -208,4 +221,6 @@ def simulate(ops: List[SimOp]) -> SimResult:
         exposed_comm_by_fabric=exposed_comm_by_fabric,
         quant_overhead_seconds=quant_overhead,
         compute_seconds_by_class=dict(compute_by_class),
+        param_count=total_param_count,
+        ef_buffer_bytes=ef_buffer_bytes,
     )

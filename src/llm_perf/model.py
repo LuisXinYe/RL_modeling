@@ -168,10 +168,20 @@ class LLMPerformanceModel:
         CPU offload removes a component from resident HBM entirely.
         """
         p = train_parallel
-        param_count = train_sim.weight_bytes / self.model.dtype_bytes
+        # param_count comes from the architecture (set by the builder on the
+        # optimizer op), NOT inferred from weight_bytes — which is now both
+        # precision-scaled and EF-excluded. Fall back to the old inference for
+        # SimResults that predate the field (param_count == 0).
+        param_count = train_sim.param_count or (
+            train_sim.weight_bytes / self.model.dtype_bytes
+        )
+        # Resident low-precision weight copy (sized by weights.dtype in builder).
         weight_bytes = float(train_sim.weight_bytes)
-        grad_bytes = float(train_sim.weight_bytes)  # gradients in model dtype
-        optim_bytes = param_count * 12
+        # Error-feedback buffer: resident weight-like state, reported separately
+        # so it never feeds param_count / optimizer sizing.
+        ef_bytes = float(getattr(train_sim, "ef_buffer_bytes", 0.0))
+        grad_bytes = param_count * self.model.dtype_bytes  # gradients in model dtype
+        optim_bytes = param_count * 12  # fp32 master + momentum + variance
 
         if p.zero_stage >= 1:
             optim_bytes /= p.dp
@@ -179,6 +189,7 @@ class LLMPerformanceModel:
             grad_bytes /= p.dp
         if p.zero_stage >= 3:
             weight_bytes /= p.dp
+            ef_bytes /= p.dp
 
         if p.param_offload:
             weight_bytes = 0.0
@@ -187,6 +198,8 @@ class LLMPerformanceModel:
         if p.optimizer_offload:
             optim_bytes = 0.0
 
+        # Fold EF in after param-count-derived terms are fixed.
+        weight_bytes += ef_bytes
         return weight_bytes / 1e9, grad_bytes / 1e9, optim_bytes / 1e9
 
     def _train_activation_gb(self, train_parallel, rl_cfg) -> float:

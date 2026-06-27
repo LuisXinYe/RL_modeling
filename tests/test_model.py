@@ -447,3 +447,89 @@ def test_compare_precision_orders_speedup_and_memory():
         "nic" in by_name["fp8"]["exposed_comm_by_fabric"]
         or "nvlink" in by_name["fp8"]["exposed_comm_by_fabric"]
     )
+
+
+def test_compare_precision_memory_is_monotonic_non_increasing():
+    """Final-review #2: low-precision weights/activations must reduce peak memory.
+
+    bf16 >= fp8 >= fp4 on peak_memory_gb (weight + activation terms shrink; the
+    fp32-master optimizer term is constant, so the ordering is non-increasing).
+    """
+    from llm_perf.model import compare_precision
+
+    model = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
+    hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
+    pc = ParallelismConfig(tp=1, dp=4)
+    rl = WorkloadConfig(total_prompts=8, group_size=2, train_micro_batch_size=1)
+    recipes = {
+        "bf16": PrecisionConfig.bf16_default(),
+        "fp8": PrecisionConfig(
+            weights=TensorPrecision(dtype="fp8_e4m3", block_size=128),
+            activations=TensorPrecision(dtype="fp8_e4m3", block_size=128),
+        ),
+        "fp4": PrecisionConfig(
+            weights=TensorPrecision(dtype="fp4_e2m1", block_size=128),
+            activations=TensorPrecision(dtype="fp4_e2m1", block_size=128),
+        ),
+    }
+    by_name = {r["name"]: r for r in compare_precision(model, hw, pc, rl, recipes)}
+    m_bf16 = by_name["bf16"]["peak_memory_gb"]
+    m_fp8 = by_name["fp8"]["peak_memory_gb"]
+    m_fp4 = by_name["fp4"]["peak_memory_gb"]
+    assert m_bf16 >= m_fp8 >= m_fp4
+    # The weight copy genuinely shrinks, so fp8 must be strictly below bf16.
+    assert m_fp8 < m_bf16
+
+
+def test_error_feedback_does_not_inflate_optimizer_or_grad_memory(model_cfg, hw):
+    """Final-review #1: EF buffer must be a separate resident term, not folded
+    into the param_count-bearing weight_bytes (which previously ~doubled all
+    memory when error_feedback was enabled)."""
+    from llm_perf.builder import build_training_step
+    from llm_perf.simulator import simulate
+
+    pc = ParallelismConfig(tp=1, dp=1, zero_stage=0)
+    rl = WorkloadConfig(total_prompts=8, group_size=2, train_micro_batch_size=1)
+    fp8_no_ef = PrecisionConfig(weights=TensorPrecision(dtype="fp8_e4m3"))
+    fp8_ef = PrecisionConfig(
+        weights=TensorPrecision(dtype="fp8_e4m3"), error_feedback=True, ef_dtype="fp16"
+    )
+
+    sim_no = simulate(build_training_step(model_cfg, hw, pc, rl, precision_cfg=fp8_no_ef))
+    sim_ef = simulate(build_training_step(model_cfg, hw, pc, rl, precision_cfg=fp8_ef))
+
+    pm = LLMPerformanceModel(model_cfg, hw)
+    w0, g0, o0 = pm._train_state_gb(sim_no, pc)
+    w1, g1, o1 = pm._train_state_gb(sim_ef, pc)
+
+    assert sim_ef.ef_buffer_bytes > 0
+    assert g1 == pytest.approx(g0)  # gradients invariant to EF
+    assert o1 == pytest.approx(o0)  # optimizer invariant to EF
+    # weight term rises by EXACTLY the EF buffer (not ~2x everything)
+    assert (w1 - w0) * 1e9 == pytest.approx(sim_ef.ef_buffer_bytes, rel=1e-6)
+
+
+def test_default_precision_follows_model_dtype(model_cfg, hw):
+    """Final-review #3: with no PrecisionConfig, roles default to ModelConfig.dtype
+    (not hardcoded bf16). A fp8 model's default DP grad comm uses fp8 bytes."""
+    from llm_perf.builder import build_training_step
+
+    # from_model_dtype unit behavior
+    pc_fp8 = PrecisionConfig.from_model_dtype("fp8")
+    assert pc_fp8.weights.dtype == "fp8"
+    assert pc_fp8.comm.dtype == "fp8"
+    assert pc_fp8.master_dtype == "fp32"
+
+    pc = ParallelismConfig(tp=1, dp=4)
+    rl = WorkloadConfig(total_prompts=8, group_size=2, train_micro_batch_size=1)
+    fp8_model = model_cfg.model_copy(update={"dtype": "fp8"})
+
+    # default (precision_cfg=None) → comm follows model dtype (fp8 = 1 B)
+    ops_default = build_training_step(fp8_model, hw, pc, rl)
+    # forced bf16 comm (2 B) for comparison
+    ops_bf16 = build_training_step(
+        fp8_model, hw, pc, rl, precision_cfg=PrecisionConfig.bf16_default()
+    )
+    dp_default = sum(o.comm_bytes for o in ops_default if o.name == "dp_grad_sync")
+    dp_bf16 = sum(o.comm_bytes for o in ops_bf16 if o.name == "dp_grad_sync")
+    assert dp_default == pytest.approx(dp_bf16 / 2, rel=1e-6)

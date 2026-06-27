@@ -639,8 +639,18 @@ def op_swiglu_ffn(
     batch_tokens: int,
     phase: Phase,
     dtype_bytes: int = 2,
+    weight_dtype_bytes: float | None = None,
+    act_dtype_bytes: float | None = None,
 ) -> OpCost:
-    """SwiGLU FFN. FLOPs = 6·d·d_ff. Ref: Shazeer 2020."""
+    """SwiGLU FFN. FLOPs = 6·d·d_ff. Ref: Shazeer 2020.
+
+    For low-precision training the resident weight copy (weight_bytes) and the
+    saved activation (output_bytes) may be smaller than the compute dtype:
+    weight_dtype_bytes / act_dtype_bytes override those terms while mem_rw (the
+    roofline traffic) keeps the compute dtype. Both default to dtype_bytes.
+    """
+    w_bytes = dtype_bytes if weight_dtype_bytes is None else weight_dtype_bytes
+    a_bytes = dtype_bytes if act_dtype_bytes is None else act_dtype_bytes
     # gate proj + up proj + down proj = 3 linear layers
     # gate: hidden -> intermediate (2*hidden*intermediate*batch)
     # up:   hidden -> intermediate (2*hidden*intermediate*batch)
@@ -653,16 +663,16 @@ def op_swiglu_ffn(
     else:
         flops = fwd_flops
 
-    weight_b = 3 * hidden_size * intermediate_size * dtype_bytes
+    weight_b = 3 * hidden_size * intermediate_size * w_bytes
 
     mem_rw = (
-        weight_b
+        3 * hidden_size * intermediate_size * dtype_bytes
         + batch_tokens * hidden_size * dtype_bytes  # read input
         + batch_tokens * hidden_size * dtype_bytes  # write output
     )
 
     if phase == Phase.TRAIN_FWD:
-        output_b = batch_tokens * hidden_size * dtype_bytes
+        output_b = batch_tokens * hidden_size * a_bytes
     else:
         output_b = 0
 
@@ -684,8 +694,17 @@ def op_moe_ffn(
     batch_tokens: int,
     phase: Phase,
     dtype_bytes: int = 2,
+    weight_dtype_bytes: float | None = None,
+    act_dtype_bytes: float | None = None,
 ) -> OpCost:
-    """MoE FFN. FLOPs = 6·d·d_e·top_k + 6·d·d_s·n_shared. Ref: DeepSeek-V3."""
+    """MoE FFN. FLOPs = 6·d·d_e·top_k + 6·d·d_s·n_shared. Ref: DeepSeek-V3.
+
+    weight_dtype_bytes / act_dtype_bytes size the resident weight copy and the
+    saved activation for low-precision training; mem_rw (roofline traffic) keeps
+    the compute dtype. Both default to dtype_bytes.
+    """
+    w_bytes = dtype_bytes if weight_dtype_bytes is None else weight_dtype_bytes
+    a_bytes = dtype_bytes if act_dtype_bytes is None else act_dtype_bytes
     routed_flops = 6 * hidden_size * expert_intermediate_size * top_k * batch_tokens
     shared_flops = (
         6 * hidden_size * shared_intermediate_size * num_shared_experts * batch_tokens
@@ -703,24 +722,32 @@ def op_moe_ffn(
 
     # Routed expert weights (all experts loaded to device in MoE)
     routed_weight_b = (
-        num_experts * 3 * hidden_size * expert_intermediate_size * dtype_bytes
+        num_experts * 3 * hidden_size * expert_intermediate_size * w_bytes
     )
     shared_weight_b = (
-        num_shared_experts * 3 * hidden_size * shared_intermediate_size * dtype_bytes
+        num_shared_experts * 3 * hidden_size * shared_intermediate_size * w_bytes
         if num_shared_experts > 0
         else 0
     )
-    router_weight_b = num_experts * hidden_size * dtype_bytes
+    router_weight_b = num_experts * hidden_size * w_bytes
     weight_b = routed_weight_b + shared_weight_b + router_weight_b
 
+    # mem_rw keeps the compute dtype (roofline traffic), independent of the
+    # resident weight precision above.
+    mem_rw_weight = (
+        num_experts * 3 * hidden_size * expert_intermediate_size * dtype_bytes
+        + (num_shared_experts * 3 * hidden_size * shared_intermediate_size * dtype_bytes
+           if num_shared_experts > 0 else 0)
+        + num_experts * hidden_size * dtype_bytes
+    )
     mem_rw = (
-        weight_b
+        mem_rw_weight
         + batch_tokens * hidden_size * dtype_bytes  # read input
         + batch_tokens * hidden_size * dtype_bytes  # write output
     )
 
     if phase == Phase.TRAIN_FWD:
-        output_b = batch_tokens * hidden_size * dtype_bytes
+        output_b = batch_tokens * hidden_size * a_bytes
     else:
         output_b = 0
 

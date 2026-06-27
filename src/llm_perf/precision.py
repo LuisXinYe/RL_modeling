@@ -16,8 +16,10 @@ _DTYPE_BYTES = {
     "fp32": 4,
     "bf16": 2,
     "fp16": 2,
+    "fp8": 1,          # ModelConfig.dtype alias (defaults to e4m3)
     "fp8_e4m3": 1,
     "fp8_e5m2": 1,
+    "fp4": 0.5,        # generic 4-bit alias
     "fp4_e2m1": 0.5,
     "mxfp4": 0.5,
 }
@@ -26,8 +28,10 @@ _COMPUTE_CLASS = {
     "fp32": "bf16",
     "bf16": "bf16",
     "fp16": "bf16",
+    "fp8": "fp8",      # ModelConfig.dtype alias
     "fp8_e4m3": "fp8",
     "fp8_e5m2": "fp8",
+    "fp4": "fp4",      # generic 4-bit alias
     "fp4_e2m1": "fp4",
     "mxfp4": "fp4",
 }
@@ -79,3 +83,21 @@ class PrecisionConfig(BaseModel):
     def bf16_default(cls) -> "PrecisionConfig":
         """All-bf16 recipe — reproduces today's (single-dtype) behavior."""
         return cls()
+
+    @classmethod
+    def from_model_dtype(cls, dtype: str) -> "PrecisionConfig":
+        """Default recipe whose four tensor roles follow the model storage dtype.
+
+        Spec §A: when no explicit PrecisionConfig is given, every tensor role
+        (weights/activations/gradients/comm) defaults to the model's own dtype,
+        not a hardcoded bf16. Master weights stay fp32 (mixed-precision Adam).
+
+        For bf16/fp16 models this is a no-op equal to bf16_default() (2 B == 2 B),
+        so existing single-dtype behavior is preserved bit-for-bit.
+        """
+        return cls(
+            weights=TensorPrecision(dtype=dtype),
+            activations=TensorPrecision(dtype=dtype),
+            gradients=TensorPrecision(dtype=dtype),
+            comm=TensorPrecision(dtype=dtype),
+        )
