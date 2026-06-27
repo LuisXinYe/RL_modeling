@@ -10,6 +10,7 @@ import math
 from dataclasses import dataclass
 
 from llm_perf.config import HardwareConfig, Phase
+from llm_perf.precision import dtype_bytes as _dtype_bytes
 
 
 @dataclass
@@ -1012,3 +1013,67 @@ def op_ring_cp(
         return OpCost()
     comm_b = 2 * (seq_len / cp_size) * kv_dim * dtype_bytes * (cp_size - 1)
     return OpCost(comm_bytes=comm_b)
+
+
+def op_quantize(
+    numel: float, in_dtype: str, out_dtype: str,
+    block_size: int = 0, scale_bytes: int = 4,
+) -> OpCost:
+    """Quantize: per-block scale reduction + cast. Memory-bound element-wise.
+
+    Reads numel*in_bytes, writes numel*out_bytes, plus scale-metadata writes.
+    FLOPs ~ a few per element (max-abs reduce + divide). Ref: fine-grained
+    block quantization (DeepSeek-V3); cost dominated by HBM traffic.
+    """
+    in_b = _dtype_bytes(in_dtype)
+    out_b = _dtype_bytes(out_dtype)
+    if block_size <= 0:
+        scale_b = scale_bytes
+    else:
+        scale_b = (-(-int(numel) // block_size)) * scale_bytes
+    mem_rw = numel * in_b + numel * out_b + scale_b
+    flops = 3 * numel  # abs, compare/reduce, divide
+    return OpCost(flops=flops, mem_rw=mem_rw, weight_bytes=0, output_bytes=0)
+
+
+def op_dequant(
+    numel: float, in_dtype: str, out_dtype: str,
+    block_size: int = 0, scale_bytes: int = 4,
+) -> OpCost:
+    """Dequantize: upcast + apply scale. Memory-bound mirror of op_quantize."""
+    in_b = _dtype_bytes(in_dtype)
+    out_b = _dtype_bytes(out_dtype)
+    if block_size <= 0:
+        scale_b = scale_bytes
+    else:
+        scale_b = (-(-int(numel) // block_size)) * scale_bytes
+    mem_rw = numel * in_b + numel * out_b + scale_b
+    flops = numel  # one multiply per element
+    return OpCost(flops=flops, mem_rw=mem_rw, weight_bytes=0, output_bytes=0)
+
+
+def op_hadamard(tokens: float, d: int, block: int) -> OpCost:
+    """Stochastic Hadamard via Fast Walsh-Hadamard Transform (FWHT).
+
+    FWHT over a block of size B costs B*log2(B) MACs; applied to tokens*d/B
+    blocks => tokens*d*log2(B) MACs. Ref: QuaRot / stochastic Hadamard rotation
+    for outlier-free low-precision training.
+    """
+    b = block if block and block > 1 else 128
+    macs = tokens * d * math.log2(b)
+    flops = 2 * macs
+    in_b = 2  # operates on bf16/fp16 activations before quant
+    mem_rw = 2 * tokens * d * in_b  # read + write the rotated tensor
+    return OpCost(flops=flops, mem_rw=mem_rw, weight_bytes=0, output_bytes=0)
+
+
+def op_compensation_add(numel: float, dtype: str) -> OpCost:
+    """Error-feedback residual add: ef_buf += (x - dequant(quant(x))).
+
+    Memory-bound: read EF buffer + read residual + write EF buffer.
+    Ref: error feedback / residual accumulation in low-precision training.
+    """
+    b = _dtype_bytes(dtype)
+    mem_rw = 3 * numel * b
+    flops = numel
+    return OpCost(flops=flops, mem_rw=mem_rw, weight_bytes=0, output_bytes=0)

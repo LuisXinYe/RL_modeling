@@ -613,3 +613,46 @@ def test_dsa_decode_models_decoupled_rope():
     kv_delta = 16 * 4096 * r * 2
     assert b.mem_rw - a.mem_rw == pytest.approx(w_delta + kv_delta)
     assert b.flops > a.flops  # rope projection FLOPs added
+
+
+# ---------------------------------------------------------------------------
+# Low-precision overhead ops: quantize, dequant, Hadamard, compensation-add
+# ---------------------------------------------------------------------------
+
+
+def test_quantize_is_memory_bound_and_adds_scale_bytes():
+    from llm_perf.ops import op_quantize
+
+    # bf16 (2B) -> fp8 (1B), 1024 elems, block 128 -> 8 scales*4B
+    cost = op_quantize(1024, "bf16", "fp8_e4m3", block_size=128, scale_bytes=4)
+    # read 1024*2 + write 1024*1 + scale writes 8*4
+    assert cost.mem_rw == pytest.approx(1024 * 2 + 1024 * 1 + 32)
+    assert cost.flops > 0  # small reduction work, but tiny
+    # memory-bound: compute time must not dominate at typical hw
+    assert cost.mem_rw > cost.flops
+
+
+def test_dequant_mirrors_quantize_direction():
+    from llm_perf.ops import op_dequant
+
+    cost = op_dequant(1024, "fp8_e4m3", "bf16", block_size=128, scale_bytes=4)
+    # read 1024*1 + write 1024*2 + read scales 8*4
+    assert cost.mem_rw == pytest.approx(1024 * 1 + 1024 * 2 + 32)
+
+
+def test_hadamard_fwht_flops_scale_with_log_block():
+    from llm_perf.ops import op_hadamard
+
+    # FWHT: tokens*d*log2(block) MACs *2 flops
+    cost = op_hadamard(tokens=100, d=256, block=128)
+    assert cost.flops == pytest.approx(2 * 100 * 256 * 7)  # log2(128)=7
+    assert cost.mem_rw > 0
+
+
+def test_compensation_add_is_elementwise_memory():
+    from llm_perf.ops import op_compensation_add
+
+    cost = op_compensation_add(2048, "fp16")
+    # read EF buffer + read grad + write EF buffer = 3 * numel * 2B
+    assert cost.mem_rw == pytest.approx(3 * 2048 * 2)
+    assert cost.weight_bytes == 0
