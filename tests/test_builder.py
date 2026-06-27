@@ -573,3 +573,27 @@ def test_bf16_default_injects_no_quant_ops():
     rl = WorkloadConfig(total_prompts=8, group_size=2, train_micro_batch_size=1)
     ops_default = build_training_step(model, hw, pc, rl)  # no precision_cfg
     assert not any(o.name.startswith(("quantize", "hadamard", "dequant")) for o in ops_default)
+
+
+# ---------------------------------------------------------------------------
+# Test: fp8 comm halves dp_grad_sync bytes and injects quant/dequant
+# ---------------------------------------------------------------------------
+
+
+def test_fp8_comm_halves_dp_grad_bytes_and_adds_quant():
+    model = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
+    hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
+    pc = ParallelismConfig(tp=1, dp=4)
+    rl = WorkloadConfig(total_prompts=8, group_size=2, train_micro_batch_size=1)
+
+    bf16_comm = PrecisionConfig.bf16_default()
+    fp8_comm = PrecisionConfig(comm=TensorPrecision(dtype="fp8_e4m3"))
+
+    ops_bf16 = build_training_step(model, hw, pc, rl, precision_cfg=bf16_comm)
+    ops_fp8 = build_training_step(model, hw, pc, rl, precision_cfg=fp8_comm)
+
+    dp_bytes_bf16 = sum(o.comm_bytes for o in ops_bf16 if o.name == "dp_grad_sync")
+    dp_bytes_fp8 = sum(o.comm_bytes for o in ops_fp8 if o.name == "dp_grad_sync")
+    assert dp_bytes_fp8 == pytest.approx(dp_bytes_bf16 / 2, rel=1e-6)
+    assert any(o.name.startswith("quantize_grad") for o in ops_fp8)
+    assert any(o.name.startswith("dequant_grad") for o in ops_fp8)

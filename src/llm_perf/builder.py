@@ -19,7 +19,11 @@ from llm_perf.config import (
     Phase,
     WorkloadConfig,
 )
-from llm_perf.precision import PrecisionConfig, compute_class as _compute_class
+from llm_perf.precision import (
+    PrecisionConfig,
+    compute_class as _compute_class,
+    dtype_bytes as _prec_dtype_bytes,
+)
 
 
 def _split_stages(
@@ -942,6 +946,7 @@ def build_training_step(
     pp = parallel_cfg.pp
     dp = parallel_cfg.dp
     dtype_bytes = model_cfg.dtype_bytes
+    pc = precision_cfg or PrecisionConfig.bf16_default()
 
     seq_len = rl_cfg.avg_prompt_len + rl_cfg.avg_response_len
     batch = rl_cfg.train_micro_batch_size
@@ -1052,14 +1057,17 @@ def build_training_step(
 
         if dp > 1 and layer_ops:
             layer_param_count = _estimate_param_count(model_cfg, parallel_cfg, [layer_cfg])
-            grad_bytes = layer_param_count * dtype_bytes  # gradient same dtype as weights
+            grad_dtype = pc.gradients.dtype
+            comm_dtype = pc.comm.dtype
+            # Collective message size (potentially reduced to comm dtype)
+            comm_bytes_local = layer_param_count * _prec_dtype_bytes(comm_dtype)
 
             if parallel_cfg.zero_stage < 3:
                 # AllReduce (ring)
-                dp_cost = ops.op_allreduce(grad_bytes, group_size=dp)
+                dp_cost = ops.op_allreduce(comm_bytes_local, group_size=dp)
             else:
                 # ZeRO-3: ReduceScatter
-                dp_cost = ops.op_reducescatter(grad_bytes, group_size=dp)
+                dp_cost = ops.op_reducescatter(comm_bytes_local, group_size=dp)
 
             dp_algorithm = "ring_half" if parallel_cfg.zero_stage >= 3 else "ring"
             dp_duration = ops.comm_time(
@@ -1069,18 +1077,62 @@ def build_training_step(
                 is_intra_node=_is_intra_node(dp, hw),
                 algorithm=dp_algorithm,
             )
+
+            # Low-precision comm: inject quantize_grad before collective
+            dep_for_dp_sync = prev_dep  # default: last backward op of this layer
+            if _compute_class(comm_dtype) != "bf16":
+                quant_cost = ops.op_quantize(
+                    layer_param_count,
+                    grad_dtype,
+                    comm_dtype,
+                    pc.comm.block_size,
+                    pc.comm.scale_bytes,
+                )
+                quant_op = SimOp(
+                    name="quantize_grad",
+                    stream="compute",
+                    duration=ops.roofline_time(quant_cost, hw),
+                    depends_on=[prev_dep] if prev_dep is not None else [],
+                    weight_bytes=0,
+                    output_bytes=0,
+                )
+                all_ops.append(quant_op)
+                dep_for_dp_sync = len(all_ops) - 1
+
             dp_sync = SimOp(
                 name="dp_grad_sync",
                 stream="dp_comm",
                 duration=dp_duration,
-                depends_on=[prev_dep],  # this layer's last backward op
+                depends_on=[dep_for_dp_sync],  # quantize_grad or last bwd op
                 weight_bytes=0,
                 output_bytes=0,
                 comm_bytes=dp_cost.comm_bytes,
                 fabric=_fabric(dp, hw),
             )
             all_ops.append(dp_sync)
-            dp_sync_indices.append(len(all_ops) - 1)
+            dp_sync_idx = len(all_ops) - 1
+
+            # Low-precision comm: inject dequant_grad after collective
+            if _compute_class(comm_dtype) != "bf16":
+                dequant_cost = ops.op_dequant(
+                    layer_param_count,
+                    comm_dtype,
+                    grad_dtype,
+                    pc.comm.block_size,
+                    pc.comm.scale_bytes,
+                )
+                dequant_op = SimOp(
+                    name="dequant_grad",
+                    stream="compute",
+                    duration=ops.roofline_time(dequant_cost, hw),
+                    depends_on=[dp_sync_idx],
+                    weight_bytes=0,
+                    output_bytes=0,
+                )
+                all_ops.append(dequant_op)
+                dp_sync_indices.append(len(all_ops) - 1)  # optimizer waits for dequant
+            else:
+                dp_sync_indices.append(dp_sync_idx)
 
     # ------ Optimizer step (placeholder) ---------------------------------------
     # Must wait for the last backward op AND the last (dp_comm-serialized)
