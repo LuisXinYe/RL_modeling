@@ -1038,7 +1038,8 @@ def op_alltoall_dispatch_hierarchical(
 
     Conservative for network sizing: every distinct destination node is counted as
     remote (the source-local node is not subtracted), upper-bounding cross-node
-    demand. Total inter+intra always equals the flat top_k traffic. Ref: DeepSeek-V3.
+    demand. When imbalance_factor=1.0, inter+intra equals the flat top_k traffic;
+    imbalance_factor scales both legs proportionally to model the hottest rank. Ref: DeepSeek-V3.
     """
     distinct_dest_nodes = min(top_k, node_limit, nodes_in_ep)
     inter_experts = distinct_dest_nodes
