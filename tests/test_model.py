@@ -509,6 +509,38 @@ def test_error_feedback_does_not_inflate_optimizer_or_grad_memory(model_cfg, hw)
     assert (w1 - w0) * 1e9 == pytest.approx(sim_ef.ef_buffer_bytes, rel=1e-6)
 
 
+def test_sweep_sparse_ratio_shape_and_node_limit_cuts_nic():
+    from llm_perf.model import sweep_sparse_ratio
+    from llm_perf.config import (
+        ModelConfig, HardwareConfig, ParallelismConfig, WorkloadConfig, LayerConfig)
+
+    layer = LayerConfig(
+        attention="GQA", num_heads=64, num_kv_heads=8, head_dim=128,
+        ffn="MoE", num_experts=256, num_shared_experts=1, top_k=8,
+        expert_intermediate_size=2048, shared_intermediate_size=2048,
+        intermediate_size=2048)
+    model = ModelConfig(name="t", hidden_size=4096, vocab_size=129280,
+                        num_layers=4, dtype="bf16", layers=[layer] * 4)
+    hw = HardwareConfig(name="hw", peak_tflops_bf16=400, hbm_capacity_gb=64,
+                        hbm_bandwidth_tb_s=3.0, devices_per_node=8)
+    base = ParallelismConfig(ep=32, dp=1, tp=1)
+    rl = WorkloadConfig(total_prompts=1000, group_size=8)
+
+    grid = [
+        {"moe_node_limit": 0},
+        {"moe_node_limit": 4},
+        {"moe_node_limit": 2},
+    ]
+    rows = sweep_sparse_ratio(model, hw, base, rl, grid)
+    assert len(rows) == 3
+    for r in rows:
+        assert set(["point", "step_seconds", "exposed_comm_by_fabric",
+                    "cross_node_gb", "peak_memory_gb", "feasible"]).issubset(r)
+    # tighter node limit => no more cross-node bytes than looser limit
+    gb = {tuple(r["point"].items()): r["cross_node_gb"] for r in rows}
+    assert gb[(("moe_node_limit", 2),)] <= gb[(("moe_node_limit", 4),)]
+
+
 def test_default_precision_follows_model_dtype(model_cfg, hw):
     """Final-review #3: with no PrecisionConfig, roles default to ModelConfig.dtype
     (not hardcoded bf16). A fp8 model's default DP grad comm uses fp8 bytes."""

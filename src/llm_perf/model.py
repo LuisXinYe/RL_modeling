@@ -696,3 +696,61 @@ def compare_precision(
         })
 
     return rows
+
+
+def sweep_sparse_ratio(
+    model_cfg: ModelConfig,
+    hw: HardwareConfig,
+    base_parallel_cfg: ParallelismConfig,
+    rl_cfg: WorkloadConfig,
+    grid: list,
+) -> list:
+    """Sweep large-sparse-ratio MoE knobs and report per-fabric network demand.
+
+    Each `grid` entry is a dict overriding any of: num_experts, top_k, ep,
+    moe_node_limit, moe_imbalance_factor. For every point the training step is
+    simulated and the per-fabric exposed communication is reported — the primary
+    signal for cross-node interconnect sizing.
+
+    Returns one dict per point with: point, step_seconds, exposed_comm_by_fabric,
+    cross_node_gb, peak_memory_gb, feasible.
+    """
+    perf_model = LLMPerformanceModel(model_cfg, hw)
+    rows = []
+    for point in grid:
+        # Apply parallel-config overrides (ep, node_limit, imbalance).
+        par_overrides = {
+            k: point[k] for k in ("ep", "moe_node_limit", "moe_imbalance_factor")
+            if k in point
+        }
+        par = base_parallel_cfg.model_copy(update=par_overrides)
+
+        # Apply per-layer MoE overrides (num_experts, top_k) to a model copy.
+        layer_overrides = {
+            k: point[k] for k in ("num_experts", "top_k") if k in point
+        }
+        if layer_overrides:
+            new_layers = [
+                lc.model_copy(update=layer_overrides) for lc in model_cfg.layers
+            ]
+            mc = model_cfg.model_copy(update={"layers": new_layers})
+        else:
+            mc = model_cfg
+
+        t_step, train_sim, _bd = pretraining_time(mc, hw, par, rl_cfg)
+        weight_gb, grad_gb, optimizer_gb = perf_model._train_state_gb(train_sim, par)
+        activation_peak_gb = perf_model._train_activation_gb(par, rl_cfg)
+        peak_memory_gb = weight_gb + grad_gb + optimizer_gb + activation_peak_gb
+
+        exposed = dict(train_sim.exposed_comm_by_fabric)
+        cross_node_gb = train_sim.exposed_comm_by_fabric.get("nic", 0.0)
+
+        rows.append({
+            "point": point,
+            "step_seconds": t_step,
+            "exposed_comm_by_fabric": exposed,
+            "cross_node_gb": cross_node_gb,
+            "peak_memory_gb": peak_memory_gb,
+            "feasible": peak_memory_gb <= hw.usable_hbm_gb,
+        })
+    return rows
