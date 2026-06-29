@@ -9,9 +9,12 @@ Paper: *Towards Efficient Pre-training: Exploring FP4 Precision in Large Languag
 Model the paper's **module- and direction-wise FP4 mixed-precision pretraining
 scheme** in `llm-perf`, with two concrete deliverables:
 
-1. **Validation anchor** — reproduce the paper's **Table 2 theoretical
-   computation-cost percentages** (57.1 / 60.7 / 66.1 / 69.6 / 100 %) within a
-   small tolerance, proving the method is modeled faithfully.
+1. **Validation anchor** — a faithful analytical cost model whose **forward FLOP
+   split exactly matches the paper's Fig 1a** (FFN 57% / attn-linear 28.7% /
+   MHA-core 14.3%) and whose recipe **ordering matches Table 2**. The Table-2
+   absolute %s are reproduced only under a parameterized speed map (the paper's
+   stated 1/2/4× yields a FLOP-honest ~36% for all-FP4, not its 57.1% — a
+   documented inconsistency in the paper's metric, see §D).
 2. **Reusable recipe** — extend `PrecisionConfig` so the paper's scheme is a
    first-class recipe that flows through the full roofline path (compute, quant
    overhead, memory, comm) for what-if analysis (e.g. apply it to Llama-8B / real
@@ -49,8 +52,10 @@ Precision is assigned **per module × per direction**, not globally:
   core (FP16)** — closes the previously-deferred attention-quantization gap.
   Implemented for **GQA/MHA** (the paper's GPT-2/Llama architectures); MLA / SWA /
   DSA fall back to current monolithic behavior (paper precision not applied).
-- **Table 2 reproduction uses a ± tolerance** (target ≤ ~3 pp absolute), with any
-  residual documented against the paper's stated FLOP split (Fig 1a).
+- **Validation anchor = Fig 1a forward split (exact) + Table 2 ordering**, with a
+  **parameterized speed map** (default 1/2/4×). The paper's Table-2 absolute %s
+  are not reproducible under its stated speeds (~21 pp gap, implies effective
+  FP4 ≈ 2×); this is documented, not forced. (Decided in brainstorming.)
 
 ## Non-goals
 
@@ -136,9 +141,14 @@ A pure function, isolated from the roofline path, mirroring the paper's
 accounting:
 
 ```python
-def theoretical_compute_cost(model_cfg, precision_cfg: PrecisionConfig) -> dict
+SPEED_MAP_PAPER = {"fp16": 1.0, "fp8": 2.0, "fp4": 4.0}  # paper's stated speeds
+
+def theoretical_compute_cost(
+    model_cfg, precision_cfg: PrecisionConfig,
+    speed_map: dict = SPEED_MAP_PAPER,
+) -> dict
 # reads precision_cfg.attn_linear / ffn_linear (fwd/bwd) per (module, direction)
-# returns {"cost_pct": float, "breakdown": {...}}
+# returns {"cost_pct": float, "forward_split": {...}, "breakdown": {...}}
 ```
 
 Method (matmul-only, per the paper):
@@ -146,18 +156,31 @@ Method (matmul-only, per the paper):
    FFN down** (from `model_cfg` dims). Count **forward** FLOPs and **backward**
    FLOPs (= 2× forward) for each.
 2. Include **MHA-core** FLOPs (QK·Kᵀ + softmax·V, fwd+bwd) fixed at FP16.
-3. Speed map **FP16=1, FP8=2, FP4=4**; `time(matmul) = flops / speed`.
+3. `speed_map` maps a compute class → relative speed; `time(matmul) = flops / speed`.
 4. `cost_pct = 100 · Σ time(assigned) / Σ time(all-FP16)`.
+5. `forward_split` returns the forward FLOP shares {ffn, attn_linear, mha_core}.
 
 The function takes a `PrecisionConfig` (reading `attn_linear`/`ffn_linear` fwd/bwd)
 so the same recipe object drives both the analytical anchor and the roofline path.
 
-**Calibration to Table 2:** the five Table-2 rows are encoded as test cases; the
-sequence length / config follows the paper (LLaMA-2-125M ablation, or the stated
-LLaMA-7B-4K split in Fig 1a). Residual vs the paper's exact numbers is documented
-in the spec/test (target ≤ ~3 pp). If a systematic gap appears, record the FLOP
-assumption that differs (e.g. whether O-proj counts toward "attention linear",
-whether GQA KV-head sharing is in the paper's split).
+**Validation anchor — what we can and cannot reproduce (decided in brainstorming):**
+
+- **Hard anchor (exact):** the **forward FLOP split** must reproduce Fig 1a for
+  LLaMA-7B-4K: **FFN ≈ 57%, attn-linear ≈ 28.7%, MHA-core ≈ 14.3%** (our FLOP
+  formula matches these to rounding). All-FP16 cost must equal **100%** exactly.
+- **Table 2 absolute %s are NOT reproducible under the paper's stated 1/2/4×.**
+  Worked analytically: with core = 14.3% of forward, the all-FP4-linear recipe
+  yields **≈ 35.7%**, not the paper's **57.1%** (a ~21 pp systematic gap). The
+  cost-% is invariant to the forward/backward multiplier, so this is not a
+  backward-counting error — it implies the paper's "computation cost" metric uses
+  an **effective FP4 ≈ 2×** (not the 4× stated in the text), i.e. the table's
+  basis is internally underspecified. This finding is documented, not hidden.
+- **Table 2 is reproduced for ordering + magnitude, and the speed map is a
+  parameter.** Tests assert the recipe **ordering** matches Table 2 (e.g.
+  attn-FP8/ffn-FP4 < attn-FP4/ffn-FP8 in cost). With `speed_map` set to
+  `{fp16:1, fp8:~1.4, fp4:2}` (the paper's implied basis), the all-FP4 row lands
+  near 57%; the default 1/2/4× map gives the FLOP-honest ~36%. Both are exposed;
+  the residual and the FP4≈2× note are recorded in the test and the demo output.
 
 ---
 
@@ -175,8 +198,14 @@ whether GQA KV-head sharing is in the paper's split).
 
 ## Section F — Validation & demo
 
-- **Table-2 test:** `theoretical_compute_cost` reproduces the 5 rows within
-  tolerance (assert each within ±3 pp; print residuals).
+- **Fig-1a test (hard anchor):** `theoretical_compute_cost(...).forward_split`
+  reproduces FFN ≈ 57% / attn-linear ≈ 28.7% / MHA-core ≈ 14.3% for LLaMA-7B-4K
+  (assert within ±1 pp); all-FP16 `cost_pct == 100.0` exactly.
+- **Table-2 test (ordering + parameterized):** assert the recipe **ordering**
+  matches Table 2 under the default 1/2/4× map; assert that with the paper's
+  implied map (`{fp16:1, fp8:1.4, fp4:2}`) the all-FP4 row is within ±3 pp of
+  57.1%. The test docstring records the ~21 pp gap under stated 1/2/4× and the
+  FP4≈2× finding.
 - **Backward-compat:** with no module precision set, builder output and the full
   suite are unchanged (bf16 default bit-identical); attention split with equal
   precision on both parts reproduces today's single-op timing (sum of the two
