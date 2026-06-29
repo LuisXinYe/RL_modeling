@@ -1,16 +1,24 @@
 """Demo: model Zhou et al. 2025 FP4 mixed-precision pretraining scheme."""
-from llm_perf.config import load_model_config, load_hardware_config, ParallelismConfig, WorkloadConfig
+from llm_perf.config import load_model_config, load_hardware_config, ParallelismConfig, WorkloadConfig, LayerConfig, ModelConfig
 from llm_perf.precision import PrecisionConfig, ModuleLinearPrecision, TensorPrecision
 from llm_perf.cost_analysis import theoretical_compute_cost
 from llm_perf.model import compare_precision
+
+
+def _llama7b_4k_mha() -> ModelConfig:
+    """LLaMA-7B-4K MHA config matching paper Fig-1a (32 KV heads, MHA)."""
+    layer = LayerConfig(attention="MHA", num_heads=32, num_kv_heads=32, head_dim=128,
+                        ffn="SwiGLU", intermediate_size=11008)
+    return ModelConfig(name="llama7b", hidden_size=4096, vocab_size=32000,
+                       num_layers=32, default_layer=layer)
 
 
 def main():
     model = load_model_config("configs/models/llama3_1_8b.yaml")
     hw = load_hardware_config("configs/hardware/ascend_910c.yaml")
 
-    print("== Fig 1a forward FLOP split (LLaMA-7B-4K) ==")
-    fs = theoretical_compute_cost(model, PrecisionConfig.bf16_default(), seq_len=4096)["forward_split"]
+    print("== Fig 1a forward FLOP split (LLaMA-7B-4K, paper; MHA) ==")
+    fs = theoretical_compute_cost(_llama7b_4k_mha(), PrecisionConfig.bf16_default(), seq_len=4096)["forward_split"]
     for k, v in fs.items():
         print(f"  {k:12s} {v*100:5.1f}%")
 
