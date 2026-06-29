@@ -622,3 +622,46 @@ def test_error_feedback_adds_buffer_and_compensation_op():
         o.name.startswith("compensation_add")
         for o in build_training_step(model, hw, pc, rl, precision_cfg=with_ef)
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests: attention split (Task 4) — GQA/MHA proj + core SimOps
+# ---------------------------------------------------------------------------
+
+
+def test_gqa_attention_splits_when_attn_linear_set():
+    model = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
+    hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
+    pc_par = ParallelismConfig(tp=1, dp=1)
+    rl = WorkloadConfig(total_prompts=8, group_size=2, train_micro_batch_size=1)
+    ops_list = build_training_step(model, hw, pc_par, rl, precision_cfg=PrecisionConfig.fp4_paper())
+    names = [o.name for o in ops_list]
+    assert any(n == "attention_proj" for n in names)
+    assert any(n == "attention_core" for n in names)
+
+
+def test_no_attention_split_without_attn_linear():
+    model = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
+    hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
+    pc_par = ParallelismConfig(tp=1, dp=1)
+    rl = WorkloadConfig(total_prompts=8, group_size=2, train_micro_batch_size=1)
+    ops_list = build_training_step(model, hw, pc_par, rl)  # default, no module precision
+    names = [o.name for o in ops_list]
+    assert not any(n in ("attention_proj", "attention_core") for n in names)
+    assert any(n.startswith("attention_") for n in names)  # monolithic preserved
+
+
+def test_attention_split_equal_precision_sums_to_monolithic_duration():
+    # With proj+core both at bf16, the two SimOp durations sum to the old single
+    # attention duration (no time created/lost by the split).
+    from llm_perf.precision import ModuleLinearPrecision
+    model = load_model_config(str(CONFIGS_DIR / "models" / "llama3_1_8b.yaml"))
+    hw = load_hardware_config(str(CONFIGS_DIR / "hardware" / "ascend_910c.yaml"))
+    pc_par = ParallelismConfig(tp=1, dp=1)
+    rl = WorkloadConfig(total_prompts=8, group_size=2, train_micro_batch_size=1)
+    bf16_split = PrecisionConfig(attn_linear=ModuleLinearPrecision())  # both bf16
+    ops_mono = build_training_step(model, hw, pc_par, rl)
+    ops_split = build_training_step(model, hw, pc_par, rl, precision_cfg=bf16_split)
+    mono = sum(o.duration for o in ops_mono if o.name.startswith("attention_"))
+    split = sum(o.duration for o in ops_split if o.name in ("attention_proj", "attention_core"))
+    assert split == pytest.approx(mono, rel=1e-6)

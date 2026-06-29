@@ -433,15 +433,68 @@ def build_layer_ops(
 
     attn_dep_idx = _idx(len(result) - 1)  # depends on CP ring / SP AG / norm1
     attn_is_large_gemm = attn_type != "DSA"  # DSA uses small_gemm for mixed cube+vec ops
-    attn_op = SimOp(
-        name=f"attention_{attn_type.lower()}",
-        stream="compute",
-        duration=ops.roofline_time(attn_cost, hw, is_large_gemm=attn_is_large_gemm),
-        depends_on=[attn_dep_idx],
-        weight_bytes=attn_cost.weight_bytes,
-        output_bytes=attn_cost.output_bytes,
-    )
-    result.append(attn_op)
+
+    if attn_type in ("GQA", "MHA") and pc.attn_linear is not None:
+        # Split path: precision-aware proj (QKV + O linears) + FP16 core (scores/softmax)
+        attn_prec = (
+            pc.linear_bwd("attn") if phase == Phase.TRAIN_BWD else pc.linear_fwd("attn")
+        )
+        proj_cost, core_cost = ops.op_attention_split(
+            num_heads=tp_num_heads,
+            num_kv_heads=tp_kv_heads,
+            head_dim=layer_cfg.head_dim,
+            hidden_size=d,
+            batch=batch,
+            seq_len=local_seq_len,
+            phase=phase,
+            kv_len=kv_len,
+            dtype_bytes=dtype_bytes,
+            proj_weight_dtype_bytes=_prec_dtype_bytes(attn_prec.dtype),
+            proj_act_dtype_bytes=_prec_dtype_bytes(attn_prec.dtype),
+        )
+        proj_op = SimOp(
+            name="attention_proj",
+            stream="compute",
+            duration=ops.roofline_time(
+                proj_cost, hw, is_large_gemm=True,
+                compute_class=_compute_class(attn_prec.dtype),
+            ),
+            depends_on=[attn_dep_idx],  # overridden by _inject_quant_chain
+            weight_bytes=proj_cost.weight_bytes,
+            output_bytes=proj_cost.output_bytes,
+            op_class=_compute_class(attn_prec.dtype),
+        )
+        proj_tail = _inject_quant_chain(
+            result=result,
+            gemm_op=proj_op,
+            numel=batch_tokens * d,
+            tokens=batch_tokens,
+            d=d,
+            pc=pc,
+            hw=hw,
+            index_offset=index_offset,
+            dep_idx=attn_dep_idx,
+            component_name="attn",
+        )
+        core_op = SimOp(
+            name="attention_core",
+            stream="compute",
+            duration=ops.roofline_time(core_cost, hw, is_large_gemm=True),  # FP16 core
+            depends_on=[proj_tail],
+            weight_bytes=0,
+            output_bytes=core_cost.output_bytes,
+        )
+        result.append(core_op)
+    else:
+        attn_op = SimOp(
+            name=f"attention_{attn_type.lower()}",
+            stream="compute",
+            duration=ops.roofline_time(attn_cost, hw, is_large_gemm=attn_is_large_gemm),
+            depends_on=[attn_dep_idx],
+            weight_bytes=attn_cost.weight_bytes,
+            output_bytes=attn_cost.output_bytes,
+        )
+        result.append(attn_op)
 
     # ---- 1b. Lightning Index AllReduce (DSA C4A only, when TP > 1) ----------
     if attn_type == "DSA" and layer_cfg.compress_ratio == 4 and tp > 1:
